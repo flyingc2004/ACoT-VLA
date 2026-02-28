@@ -1,6 +1,6 @@
 # ACoT-VLA: Action Chain-of-Thought for Vision-Language-Action Models
 [![arXiv](https://img.shields.io/badge/arXiv-2601.11404-b31b1b.svg)](https://arxiv.org/abs/2601.11404)
-[![Hugging Face](https://img.shields.io/badge/arXiv-Paper-yellow.svg)](https://huggingface.co/papers/2601.11404)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Paper-yellow.svg)](https://huggingface.co/papers/2601.11404)
 [![License: CC BY 4.0](https://img.shields.io/badge/License-CC%20BY%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
