@@ -14,7 +14,7 @@ import openpi.shared.normalize as normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.transforms as transforms
-
+import pathlib
 
 class RemoveStrings(transforms.DataTransformFn):
     def __call__(self, x: dict) -> dict:
@@ -128,9 +128,14 @@ def main(config_name: str, max_frames: int | None = None):
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = "./"
-    print(f"Writing stats to: {output_path}")
-    normalize.save(output_path, norm_stats)
+    # output_path = "./"
+    # print(f"Writing stats to: {output_path}")
+    # normalize.save(output_path, norm_stats)
+    if hasattr(config, "data") and hasattr(config.data, "assets"):
+        asset_id = getattr(config.data.assets, "asset_id", None)
+    output_dir = pathlib.Path(config.assets_dirs) / asset_id if asset_id else pathlib.Path("./")
+    print(f"Writing stats to: {output_dir}")
+    normalize.save(output_dir, norm_stats)
 
 if __name__ == "__main__":
     tyro.cli(main)

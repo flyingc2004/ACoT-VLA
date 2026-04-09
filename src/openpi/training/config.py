@@ -1823,22 +1823,11 @@ _CONFIGS = [
             default_prompt = "This is the icra simulation challenge baseline config. Please refer to the README for details.",
             # Fill in the 9 tasks for training. You can use all 9 tasks, or a subset of them based on your preference.
             repo_id = [
-                "/mnt/public/E6/lerobot/7819/task_5833", # Pouring workpieces, single-arm task, uses right hand only
-                "/mnt/public/E6/lerobot/7820/task_5832", # Opening a door, single-arm task, uses right hand only
-                "/mnt/public/E6/lerobot/8153", # Scooping popcorn, single-arm task, uses right hand only
-                "/mnt/public/E6/lerobot/7821/task_5829", # Carrying a pot, dual-arm task, uses both hands simultaneously
-
-                "/mnt/public/E6/lerobot/7837/task_5441", # Grabbing toys, dual-arm task, uses left or right hand based on instruction
-                "/mnt/public/E6/lerobot/7944/task_6100", # Supermarket item retrieval, dual-arm task, uses left or right hand based on instruction
-                "/mnt/public/E6/lerobot/7818/task_5853", # Supermarket restocking, dual-arm task, uses left or right hand based on instruction
-                "/mnt/public/E6/lerobot/8169/2026021101/gripper/task_6167", # packages sorting, grasps objects based on instruction, single-arm task but involves waist movement
-
-                "/mnt/public/E6/lerobot/7878//task_5828", # Arranging the table, dual-arm task, uses both hands simultaneously
+                "/home/xhz/Datasets/AgiBot/Reasoning2Action-Sim/dataset_without_depth/open_door", # Pouring workpieces, single-arm task, uses right hand only
             ],
             # Set the asset dir to specify normalization stats calculated from the dataset
             assets=AssetsConfig(
                 assets_dir=None,
-                asset_id="/mnt/public/zhonglinqing/data/datasets/genie_sim_icra_datasets/nine_dataset_merge_assets",
             ),
             # this line defines a mapping from task name to (prompt, probability of replacement) for training. 
             # If the current episode's task name matches one of the keys in the mapping, then with the corresponding probability, 
@@ -1926,7 +1915,7 @@ _CONFIGS = [
         optimizer = _optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay = 0.999,
         weight_loader = weight_loaders.ACOTCheckpointWeightLoader(
-            "/mnt/public/zhonglinqing/pkgs/pi05_model/params"
+            "gs://openpi-assets/checkpoints/pi05_base/params"
         ),
         num_train_steps = 50_000,
         save_interval = 5000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
