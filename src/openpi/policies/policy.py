@@ -16,6 +16,7 @@ from openpi import transforms as _transforms
 from openpi.models import model as _model
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
+from PIL import Image
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
 
@@ -42,6 +43,29 @@ class Policy(BasePolicy):
     def infer(self, obs: dict) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
+        # Debug: save top_head to PNG. PIL needs (H,W) or (H,W,C) with C in {1,3,4}.
+        img = inputs["images"]["top_head"]
+        img_np = np.asarray(img)
+        while img_np.ndim == 4 and img_np.shape[0] == 1:
+            img_np = img_np[0]
+        # CHW (C in {1,3,4}) -> HWC when spatial dims look like H,W
+        if (
+            img_np.ndim == 3
+            and img_np.shape[0] in (1, 3, 4)
+            and img_np.shape[1] >= 8
+            and img_np.shape[2] >= 8
+            and img_np.shape[-1] not in (1, 3, 4)
+        ):
+            img_np = np.transpose(img_np, (1, 2, 0))
+        if img_np.ndim == 2 or (img_np.ndim == 3 and img_np.shape[-1] in (1, 3, 4)):
+            Image.fromarray(img_np.astype(np.uint8)).save("top_head.png")
+        else:
+            logging.warning(
+                "Skipping top_head.png debug save: top_head shape %s is not HWC-compatible "
+                "(client should send uint8 HxWx3 or 1xHxWx3).",
+                img_np.shape,
+            )
+
         inputs = self._input_transform(inputs)
         # Make a batch and convert to jax.Array.
         inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
