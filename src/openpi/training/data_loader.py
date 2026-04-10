@@ -194,6 +194,11 @@ def create_torch_dataset(
                 for dataset_meta in dataset_metas
                 for key in data_config.action_sequence_keys
             },
+            # Add this section to allow for dropped frames (e.g., N frames tolerance)
+            tolerances_s={
+                single_repo: 5 / dataset_meta.fps  # Replace N with the number of frames you want to allow
+                for single_repo, dataset_meta in zip(repo_id, dataset_metas)
+            }
         )
         if data_config.prompt_from_task:
             for n, d in enumerate(dataset._datasets):
