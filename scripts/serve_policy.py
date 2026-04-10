@@ -86,7 +86,7 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
     ),
     EnvMode.G2SIM: Checkpoint(
         config="acot_icra_simulation_challenge_reasoning_to_action",
-        dir="./checkpoints/acot_icra_simulation_challenge_reasoning_to_action/exp_name/30000",
+        dir="/mnt/sdc/xhz/openpi_server_image_app/checkpoints/baseline/30000",
     )
 }
 
