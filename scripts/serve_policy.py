@@ -7,6 +7,8 @@ import tyro
 
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
+from openpi.policies.checkpoint_switcher import CheckpointRoutingSwitcher
+from openpi.policies.routing_policy import RoutingPolicy
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
@@ -56,6 +58,13 @@ class Args:
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
+
+    # If set, load multiple checkpoints from this JSON and route per request by task/prompt (see yrm/checkpoint_routing.example.json).
+    checkpoint_routing: str | None = None
+    # If true, load the default checkpoint once at startup (fail fast on bad paths).
+    routing_preload_default: bool = False
+    # If true, do not fall back to default when a non-default checkpoint fails to load.
+    routing_strict_load: bool = False
 
 
 # Default checkpoints that should be used for each environment.
@@ -112,8 +121,20 @@ def create_policy(args: Args) -> _policy.Policy:
 
 
 def main(args: Args) -> None:
-    policy = create_policy(args)
-    policy_metadata = policy.metadata
+    if args.checkpoint_routing:
+        switcher = CheckpointRoutingSwitcher(
+            args.checkpoint_routing,
+            default_prompt=args.default_prompt,
+            strict_load=args.routing_strict_load,
+        )
+        policy = RoutingPolicy(
+            switcher,
+            preload_default=args.routing_preload_default,
+        )
+        policy_metadata = policy.metadata
+    else:
+        policy = create_policy(args)
+        policy_metadata = policy.metadata
 
     # Record the policy's behavior.
     if args.record:
