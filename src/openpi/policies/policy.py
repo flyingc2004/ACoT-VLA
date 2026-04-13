@@ -40,7 +40,7 @@ class Policy(BasePolicy):
         self._metadata = metadata or {}
 
     @override
-    def infer(self, obs: dict) -> dict:  # type: ignore[misc]
+    def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
         logging.info(f"Task name: {inputs['task_name']}")
@@ -76,7 +76,18 @@ class Policy(BasePolicy):
         outputs = {
             "state": inputs["state"]
         }
-        result = self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs)
+        sample_kwargs = copy.deepcopy(self._sample_kwargs)
+        if noise is not None:
+            noise_jax = jnp.asarray(noise, dtype=inputs["state"].dtype)
+            if noise_jax.ndim == 2:
+                noise_jax = noise_jax[None, ...]
+            sample_kwargs["noise"] = noise_jax
+
+        try:
+            result = self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **sample_kwargs)
+        except TypeError:
+            # Some models do not expose a `noise` kwarg.
+            result = self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs)
 
         if isinstance(result, dict):
             outputs.update(result)    

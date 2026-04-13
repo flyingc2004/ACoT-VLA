@@ -25,18 +25,60 @@ class WebsocketPolicyServer:
         host: str = "0.0.0.0",
         port: int | None = None,
         metadata: dict | None = None,
-        use_ensemble: bool = True,
-        ensemble_m: float = 0.01,
+        execute_k: int = 10,
+        overlap_new_weight: float = 0.75,
+        use_vp_noise: bool = True,
+        noise_beta: float = 0.5,
     ) -> None:
         self._policy = policy
         self._host = host
         self._port = port
         self._metadata = metadata or {}
-        self._use_ensemble = use_ensemble
-        self._ensemble_m = ensemble_m
-        self._ensemble_data = {}
-        self._current_step = 0
+        self._execute_k = execute_k
+        self._overlap_new_weight = overlap_new_weight
+        self._use_vp_noise = use_vp_noise
+        self._noise_beta = noise_beta
+        self._noise_sigma = float(np.sqrt(max(0.0, 1.0 - noise_beta**2)))
+        self._action_buffer: list[np.ndarray] = []
+        self._overlap_buffer: np.ndarray | None = None
+        self._prev_noise: np.ndarray | None = None
+        self._last_episode_index: int | None = None
         logging.getLogger("websockets.server").setLevel(logging.INFO)
+
+    def _reset_temporal_state(self) -> None:
+        self._action_buffer = []
+        self._overlap_buffer = None
+        self._prev_noise = None
+
+    def _should_reset_from_obs(self, obs: dict) -> bool:
+        # Common reset flags used by env wrappers.
+        for key in ("reset", "is_first", "new_episode", "episode_start"):
+            if bool(obs.get(key, False)):
+                return True
+
+        # If frame index is explicitly provided, treat frame 0 as a fresh episode.
+        frame_index = obs.get("frame_index")
+        if frame_index is not None:
+            try:
+                if int(frame_index) == 0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+
+        # Reset when episode id changes.
+        episode_index = obs.get("episode_index")
+        if episode_index is not None:
+            try:
+                epi = int(episode_index)
+                if self._last_episode_index is None:
+                    self._last_episode_index = epi
+                elif epi != self._last_episode_index:
+                    self._last_episode_index = epi
+                    return True
+            except (TypeError, ValueError):
+                pass
+
+        return False
 
     def serve_forever(self) -> None:
         asyncio.run(self.run())
@@ -55,9 +97,9 @@ class WebsocketPolicyServer:
     async def _handler(self, websocket: _server.ServerConnection):
         logger.info(f"Connection from {websocket.remote_address} opened")
 
-        # Reset ensemble state for each new connection
-        self._ensemble_data = {}
-        self._current_step = 0
+        # Reset per-connection temporal state.
+        self._reset_temporal_state()
+        self._last_episode_index = None
         
         packer = msgpack_numpy.Packer()
 
@@ -69,33 +111,56 @@ class WebsocketPolicyServer:
                 start_time = time.monotonic()
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
-                infer_time = time.monotonic()
-                action_chunk = self._policy.infer(obs)
-                infer_time = time.monotonic() - infer_time
+                if isinstance(obs, dict) and self._should_reset_from_obs(obs):
+                    self._reset_temporal_state()
+                    # Keep routing / policy state clean if policy exposes a reset hook.
+                    if hasattr(self._policy, "reset") and callable(getattr(self._policy, "reset")):
+                        self._policy.reset()
 
-                if self._use_ensemble:
-                    # 1. Add the new action chunk to the buffer with weights
-                    for i in range(len(action_chunk["action"])):
-                        target_step = self._current_step + i
-                        weight = np.exp(-self._ensemble_m * i)
-                        
-                        current_val, current_weight = self._ensemble_data.get(target_step, (0, 0))
-                        self._ensemble_data[target_step] = (current_val + action_chunk["action"][i] * weight, current_weight + weight)
+                infer_time = 0.0
+                if not self._action_buffer:
+                    infer_start = time.monotonic()
+                    if self._use_vp_noise and self._prev_noise is not None:
+                        try:
+                            infer_result = self._policy.infer(obs, noise=self._prev_noise)
+                        except TypeError:
+                            infer_result = self._policy.infer(obs)
+                    else:
+                        infer_result = self._policy.infer(obs)
+                    infer_time = time.monotonic() - infer_start
 
-                    # 2. Get the smoothed action for the current step
-                    final_action_sum, final_weight_sum = self._ensemble_data[self._current_step]
-                    final_action = final_action_sum / final_weight_sum
-                    
-                    # Replace the chunk with the single smoothed action
-                    action = {"action": final_action}
+                    action_chunk = infer_result.get("actions", infer_result.get("action"))
+                    if action_chunk is None:
+                        raise ValueError("Policy output must include 'actions' or 'action'.")
 
-                    # 3. Clean up old buffer data
-                    del self._ensemble_data[self._current_step]
-                    
-                    self._current_step += 1
-                else:
-                    # Original behavior: return the first action of the chunk
-                    action = {"action": action_chunk["action"][0]}
+                    chunk_arr = np.asarray(action_chunk)
+                    if chunk_arr.ndim == 1:
+                        chunk_arr = chunk_arr[None, :]
+
+                    if self._use_vp_noise:
+                        # Generate warm-start noise in float32; model side will cast to runtime dtype.
+                        eps = np.random.randn(*chunk_arr.shape).astype(np.float32)
+                        if self._prev_noise is None or self._prev_noise.shape != chunk_arr.shape:
+                            self._prev_noise = eps
+                        else:
+                            self._prev_noise = (
+                                self._noise_beta * self._prev_noise
+                                + self._noise_sigma * eps
+                            )
+
+                    if self._overlap_buffer is not None and len(self._overlap_buffer) > 0:
+                        overlap_len = min(len(self._overlap_buffer), len(chunk_arr))
+                        old_weight = 1.0 - self._overlap_new_weight
+                        chunk_arr[:overlap_len] = (
+                            old_weight * self._overlap_buffer[:overlap_len]
+                            + self._overlap_new_weight * chunk_arr[:overlap_len]
+                        )
+
+                    k = max(1, min(self._execute_k, len(chunk_arr)))
+                    self._action_buffer = [chunk_arr[i] for i in range(k)]
+                    self._overlap_buffer = chunk_arr[k:] if k < len(chunk_arr) else None
+
+                action = {"action": self._action_buffer.pop(0)}
 
 
                 action["server_timing"] = {
