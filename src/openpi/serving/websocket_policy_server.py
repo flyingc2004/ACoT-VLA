@@ -3,6 +3,7 @@ import http
 import logging
 import time
 import traceback
+import numpy as np
 
 from openpi_client import base_policy as _base_policy
 from openpi_client import msgpack_numpy
@@ -24,11 +25,17 @@ class WebsocketPolicyServer:
         host: str = "0.0.0.0",
         port: int | None = None,
         metadata: dict | None = None,
+        use_ensemble: bool = True,
+        ensemble_m: float = 0.01,
     ) -> None:
         self._policy = policy
         self._host = host
         self._port = port
         self._metadata = metadata or {}
+        self._use_ensemble = use_ensemble
+        self._ensemble_m = ensemble_m
+        self._ensemble_data = {}
+        self._current_step = 0
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
@@ -58,8 +65,33 @@ class WebsocketPolicyServer:
                 obs = msgpack_numpy.unpackb(await websocket.recv())
 
                 infer_time = time.monotonic()
-                action = self._policy.infer(obs)
+                action_chunk = self._policy.infer(obs)
                 infer_time = time.monotonic() - infer_time
+
+                if self._use_ensemble:
+                    # 1. Add the new action chunk to the buffer with weights
+                    for i in range(len(action_chunk["action"])):
+                        target_step = self._current_step + i
+                        weight = np.exp(-self._ensemble_m * i)
+                        
+                        current_val, current_weight = self._ensemble_data.get(target_step, (0, 0))
+                        self._ensemble_data[target_step] = (current_val + action_chunk["action"][i] * weight, current_weight + weight)
+
+                    # 2. Get the smoothed action for the current step
+                    final_action_sum, final_weight_sum = self._ensemble_data[self._current_step]
+                    final_action = final_action_sum / final_weight_sum
+                    
+                    # Replace the chunk with the single smoothed action
+                    action = {"action": final_action}
+
+                    # 3. Clean up old buffer data
+                    del self._ensemble_data[self._current_step]
+                    
+                    self._current_step += 1
+                else:
+                    # Original behavior: return the first action of the chunk
+                    action = {"action": action_chunk["action"][0]}
+
 
                 action["server_timing"] = {
                     "infer_ms": infer_time * 1000,
