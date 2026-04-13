@@ -120,11 +120,7 @@ class CheckpointRoutingSwitcher:
         return dict(cfg.policy_metadata or {})
 
     def resolve_checkpoint_key(self, obs: dict) -> str:
-        task = ""
-        for key in ("task", "task_name"):
-            if key in obs:
-                task = _scalar_to_str(obs[key]).strip()
-                break
+        task = _scalar_to_str(obs.get("task_name", "")).strip()
         if task and task in self._route_task:
             return self._route_task[task]
 
@@ -175,6 +171,7 @@ class CheckpointRoutingSwitcher:
 
     def get_policy_for_obs(self, obs: dict) -> _policy.Policy:
         target_key = self.resolve_checkpoint_key(obs)
+        logging.info(f"Target key: {target_key}")
 
         if self._current_key == target_key and self._current_policy is not None:
             return self._current_policy

@@ -1,4 +1,4 @@
-cart_num=0,1
+cart_num=7
 port=8999
 
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH

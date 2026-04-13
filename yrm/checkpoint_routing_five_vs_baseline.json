@@ -4,19 +4,19 @@
   "checkpoints": {
     "baseline": {
       "config": "acot_icra_simulation_challenge_reasoning_to_action",
-      "path": "/data/checkpoints"
+      "path": "/mnt/sdc/xhz/ACoT-VLA/checkpoints/baseline/30000"
     },
     "five_tasks": {
       "config": "acot_icra_simulation_challenge_reasoning_to_action",
-      "path": "/path/to/your_five_task_joint_ckpt_parent"
+      "path": "/mnt/sdc/xhz/ACoT-VLA/checkpoints/icra/test/19999"
     }
   },
   "route_by_task_name": {
-    "Unload workpiece_icra_SIM": "five_tasks",
-    "Remove misplaced beverages from shelves": "five_tasks",
-    "Make popcorn": "five_tasks",
-    "Carry the pot": "five_tasks",
-    "Turn the doorknob": "five_tasks"
+    "open_door": "five_tasks",
+    "pour_workpiece": "five_tasks",
+    "scoop_popcorn": "five_tasks",
+    "take_wrong_item_shelf": "five_tasks",
+    "hold_pot": "five_tasks"
   },
   "route_by_prompt_exact": {},
   "route_by_prompt_contains": {}

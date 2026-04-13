@@ -2,6 +2,8 @@ import dataclasses
 import enum
 import logging
 import socket
+import os
+from datetime import datetime
 
 import tyro
 
@@ -154,5 +156,12 @@ def main(args: Args) -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, force=True)
+    time_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    log_path = f"/home/xhz/logging/icra/"
+    os.makedirs(log_path, exist_ok=True)
+     
+    logging.basicConfig(level=logging.INFO,
+                        filename=log_path + f"{time_str}.log", 
+                        format="%(asctime)s %(levelname)s %(message)s",
+                        force=True)
     main(tyro.cli(Args))

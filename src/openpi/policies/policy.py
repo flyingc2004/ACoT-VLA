@@ -43,6 +43,7 @@ class Policy(BasePolicy):
     def infer(self, obs: dict) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
+        logging.info(f"Task name: {inputs['task_name']}")
         # Debug: save top_head to PNG. PIL needs (H,W) or (H,W,C) with C in {1,3,4}.
         img = inputs["images"]["top_head"]
         img_np = np.asarray(img)
