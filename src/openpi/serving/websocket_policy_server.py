@@ -54,6 +54,11 @@ class WebsocketPolicyServer:
 
     async def _handler(self, websocket: _server.ServerConnection):
         logger.info(f"Connection from {websocket.remote_address} opened")
+
+        # Reset ensemble state for each new connection
+        self._ensemble_data = {}
+        self._current_step = 0
+        
         packer = msgpack_numpy.Packer()
 
         await websocket.send(packer.pack(self._metadata))
