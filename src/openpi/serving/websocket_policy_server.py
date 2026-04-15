@@ -25,7 +25,7 @@ class WebsocketPolicyServer:
         host: str = "0.0.0.0",
         port: int | None = None,
         metadata: dict | None = None,
-        execute_k: int = 10,
+        execute_k: int = 15,
         overlap_new_weight: float = 0.75,
         use_vp_noise: bool = True,
         noise_beta: float = 0.5,
@@ -160,7 +160,11 @@ class WebsocketPolicyServer:
                     self._action_buffer = [chunk_arr[i] for i in range(k)]
                     self._overlap_buffer = chunk_arr[k:] if k < len(chunk_arr) else None
 
-                action = {"action": self._action_buffer.pop(0)}
+                # PiPolicy / genie_sim expect `actions` to be a sequence of per-step vectors
+                # (deque iterates the outer sequence). A single 1D ndarray would iterate as
+                # per-dimension scalars — wrap as a one-element list.
+                step = np.asarray(self._action_buffer.pop(0))
+                action = {"actions": [step]}
 
 
                 action["server_timing"] = {
