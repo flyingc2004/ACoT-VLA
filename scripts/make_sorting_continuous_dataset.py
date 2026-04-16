@@ -343,31 +343,43 @@ def build_continuous_dataset(
     max_groups: int | None,
     task_name: str,
     bridge_instruction: str,
+    rewrite_only: bool,
     sanitize_reset_instructions: bool,
     reset_instruction_alias: str,
     overwrite: bool,
     reencode_on_fail: bool,
     dry_run: bool,
 ) -> None:
-    if shutil.which("ffmpeg") is None and not dry_run:
+    if shutil.which("ffmpeg") is None and not dry_run and not rewrite_only:
         raise RuntimeError("ffmpeg is not available in PATH.")
 
     refs, info_template, stats_template = build_episode_refs(source_dirs)
-    groups = build_groups(
-        refs,
-        episodes_per_group=episodes_per_group,
-        group_stride=group_stride,
-        shuffle=shuffle,
-        seed=seed,
-        max_groups=max_groups,
-    )
+    if rewrite_only:
+        refs_local = refs[:]
+        if shuffle:
+            random.Random(seed).shuffle(refs_local)
+        if max_groups is not None:
+            refs_local = refs_local[:max_groups]
+        groups = [[r] for r in refs_local]
+    else:
+        groups = build_groups(
+            refs,
+            episodes_per_group=episodes_per_group,
+            group_stride=group_stride,
+            shuffle=shuffle,
+            seed=seed,
+            max_groups=max_groups,
+        )
 
     fps = float(info_template["fps"])
     chunks_size = int(info_template.get("chunks_size", 1000))
     video_keys = gather_video_keys(info_template)
 
     print(f"Source episodes: {len(refs)}")
-    print(f"Generated groups: {len(groups)} (episodes_per_group={episodes_per_group}, stride={group_stride})")
+    if rewrite_only:
+        print(f"Generated episodes: {len(groups)} (rewrite-only mode, no cross-episode stitching)")
+    else:
+        print(f"Generated groups: {len(groups)} (episodes_per_group={episodes_per_group}, stride={group_stride})")
     print(f"Output dir: {output_dir}")
 
     if dry_run:
@@ -392,7 +404,6 @@ def build_continuous_dataset(
     reset_segments_sanitized = 0
 
     global_index_offset = 0
-
     with tempfile.TemporaryDirectory(prefix="sorting_continuous_concat_") as td:
         temp_dir = Path(td)
 
@@ -462,10 +473,16 @@ def build_continuous_dataset(
             pq.write_table(pa.Table.from_pandas(merged_df, preserve_index=False), out_parquet, compression="zstd")
 
             for vid_key in video_keys:
-                in_videos = [s.video_paths[vid_key] for s in group]
                 video_chunk_dir = output_dir / "videos" / f"chunk-{ep_chunk:03d}" / vid_key
                 out_video = video_chunk_dir / f"episode_{new_ep_idx:06d}.mp4"
-                concat_videos(in_videos, out_video, temp_dir, reencode_on_fail=reencode_on_fail)
+                if rewrite_only:
+                    if len(group) != 1:
+                        raise ValueError("rewrite_only mode expects each group to contain exactly one episode.")
+                    out_video.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(group[0].video_paths[vid_key], out_video)
+                else:
+                    in_videos = [s.video_paths[vid_key] for s in group]
+                    concat_videos(in_videos, out_video, temp_dir, reencode_on_fail=reencode_on_fail)
 
             episodes_rows.append(
                 {
@@ -560,6 +577,14 @@ def parse_args() -> argparse.Namespace:
         help="Instruction inserted at boundaries between stitched episodes.",
     )
     parser.add_argument(
+        "--rewrite-only",
+        action="store_true",
+        help=(
+            "Do not stitch episodes. Keep one source episode per output episode and only rewrite instruction text "
+            "(videos are copied directly instead of ffmpeg concat)."
+        ),
+    )
+    parser.add_argument(
         "--sanitize-reset-instructions",
         action="store_true",
         default=True,
@@ -612,6 +637,7 @@ def main() -> None:
         max_groups=args.max_groups,
         task_name=args.task_name,
         bridge_instruction=args.bridge_instruction,
+        rewrite_only=args.rewrite_only,
         sanitize_reset_instructions=args.sanitize_reset_instructions,
         reset_instruction_alias=args.reset_instruction_alias,
         overwrite=args.overwrite,
