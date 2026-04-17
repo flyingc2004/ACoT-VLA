@@ -99,6 +99,12 @@ class DataConfig:
 
     dataloader_sampler: str | None = ''
 
+    # Controls reset-like interval truncation in subtask sampler.
+    # - "auto": disable truncation for datasets detected as continuous.
+    # - "always": always keep reset truncation enabled.
+    # - "never": never truncate reset-like intervals.
+    subtask_reset_truncation_mode: str = "auto"
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.

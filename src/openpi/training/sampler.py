@@ -1,15 +1,82 @@
 
 import torch
-import random
-from tqdm import tqdm
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+
+
+RESET_KEYWORDS = ("reset", "return", "default")
+CONTINUOUS_KEYWORDS = ("continuous", "continous")
+RESET_TRUNCATE_THRESHOLD = 90
+RESET_TRUNCATE_TO = 45
+RESET_TRUNCATION_MODES = ("auto", "always", "never")
 
 def get_base_dataset(ds):
     if hasattr(ds, "_dataset"):
         return get_base_dataset(ds._dataset)
     return ds
 
-def sample_subtask(dataset):
+
+def _iter_string_values(obj):
+    if obj is None:
+        return
+    if isinstance(obj, str):
+        yield obj
+        return
+    if isinstance(obj, dict):
+        for value in obj.values():
+            yield from _iter_string_values(value)
+        return
+    if isinstance(obj, (list, tuple, set)):
+        for value in obj:
+            yield from _iter_string_values(value)
+
+
+def _dataset_text_hints(ds):
+    hints = []
+
+    # Paths and repo identifiers often include "continuous".
+    repo_id = getattr(ds, "repo_id", None)
+    if repo_id is not None:
+        hints.extend(_iter_string_values(repo_id))
+
+    meta = getattr(ds, "meta", None)
+    if meta is None:
+        return hints
+
+    tasks = getattr(meta, "tasks", None)
+    if tasks is not None:
+        hints.extend(_iter_string_values(tasks))
+
+    info = getattr(meta, "info", None)
+    if isinstance(info, dict):
+        for key in ("task", "task_name", "dataset_name", "repo_id", "name", "description"):
+            if key in info:
+                hints.extend(_iter_string_values(info[key]))
+
+    return [h for h in hints if isinstance(h, str)]
+
+
+def _is_continuous_dataset(ds):
+    for text in _dataset_text_hints(ds):
+        lower = text.lower()
+        if any(keyword in lower for keyword in CONTINUOUS_KEYWORDS):
+            return True
+    return False
+
+
+def _should_disable_reset_truncation(ds, reset_truncation_mode):
+    if reset_truncation_mode == "always":
+        return False
+    if reset_truncation_mode == "never":
+        return True
+    if reset_truncation_mode == "auto":
+        return _is_continuous_dataset(ds)
+    raise ValueError(
+        f"Invalid reset truncation mode: {reset_truncation_mode}. "
+        f"Expected one of {RESET_TRUNCATION_MODES}."
+    )
+
+
+def sample_subtask(dataset, reset_truncation_mode="auto"):
     valid_intervals = []
     base_ds = get_base_dataset(dataset)
     
@@ -28,6 +95,12 @@ def sample_subtask(dataset):
 
     for sub_ds in sub_datasets:
         inner_ds = get_base_dataset(sub_ds)
+        disable_reset_truncation = _should_disable_reset_truncation(inner_ds, reset_truncation_mode)
+        if disable_reset_truncation:
+            if reset_truncation_mode == "auto":
+                print("Detected continuous dataset; reset-like subtask truncation is disabled.")
+            else:
+                print("Reset-like subtask truncation is disabled by config.")
         
         instruction_segment = inner_ds.meta.info.get('instruction_segments', {})
         episode_data_index = inner_ds.episode_data_index
@@ -45,11 +118,11 @@ def sample_subtask(dataset):
                 local_end = subtask["success_frame_index"] + local_episode_start
                 
                 instruction = subtask["instruction"].lower()
-                is_reset = any(k in instruction for k in ['reset', 'return', 'default'])
+                is_reset = any(k in instruction for k in RESET_KEYWORDS)
                 
-                if is_reset:
-                    if local_end - local_start > 90:
-                        local_end = local_start + 45
+                if is_reset and not disable_reset_truncation:
+                    if local_end - local_start > RESET_TRUNCATE_THRESHOLD:
+                        local_end = local_start + RESET_TRUNCATE_TO
                 
                 global_start = local_start + current_global_offset
                 global_end = local_end + current_global_offset
@@ -67,7 +140,13 @@ class FrameSampler(torch.utils.data.Sampler):
     """
     Custom sampler that only samples data indices falling within specified intervals
     """
-    def __init__(self, dataset, sampler_type):
+    def __init__(self, dataset, sampler_type, *, reset_truncation_mode="auto"):
+        if reset_truncation_mode not in RESET_TRUNCATION_MODES:
+            raise ValueError(
+                f"Invalid reset truncation mode: {reset_truncation_mode}. "
+                f"Expected one of {RESET_TRUNCATION_MODES}."
+            )
+        self.reset_truncation_mode = reset_truncation_mode
         valid_intervals = self.parse_dataset(dataset, sampler_type)
         self.sample_frames(valid_intervals, len(dataset))
 
@@ -77,7 +156,7 @@ class FrameSampler(torch.utils.data.Sampler):
             intervals: List of (start_index, end_index) tuples
         """
         if sampler_type == 'subtask':
-            return sample_subtask(dataset)
+            return sample_subtask(dataset, self.reset_truncation_mode)
         else:
             raise ValueError(f"Invalid sampler type: {sampler_type}")
 

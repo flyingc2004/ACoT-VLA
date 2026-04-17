@@ -370,7 +370,11 @@ def create_torch_data_loader(
     sampler = None
     if data_config.dataloader_sampler != '':
         from openpi.training.sampler import FrameSampler
-        sampler = FrameSampler(dataset, data_config.dataloader_sampler)
+        sampler = FrameSampler(
+            dataset,
+            data_config.dataloader_sampler,
+            reset_truncation_mode=data_config.subtask_reset_truncation_mode,
+        )
         shuffle = False
 
     dataset = SafeDataset(dataset)
