@@ -1815,6 +1815,7 @@ _CONFIGS = [
     # genie sim 3.0 baseline configs
     TrainConfig(
         name="acot_icra_simulation_challenge_reasoning_to_action",
+        checkpoint_base_dir="/data/checkpoints",
         # For the ICRA sim challenge, we set both coarse and fine action horizons to 30 since the tasks are relatively long-horizon.
         # We also use both explicit and implicit action reasoners, and use the downsample-based implicit extractor.
         # You can modify these design choices based on the specific tasks and dataset. 
@@ -1823,11 +1824,28 @@ _CONFIGS = [
             default_prompt = "This is the icra simulation challenge baseline config. Please refer to the README for details.",
             # Fill in the 9 tasks for training. You can use all 9 tasks, or a subset of them based on your preference.
             repo_id = [
-                "/home/xhz/Datasets/AgiBot/Reasoning2Action-Sim/dataset_without_depth/open_door", # Pouring workpieces, single-arm task, uses right hand only
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/pour_workpiece", # Pouring workpieces, single-arm task, uses right hand only
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/take_wrong_item_shelf", 
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/scoop_popcorn", 
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/scoop_popcorn_part_2", 
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/hold_pot",
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/open_door",
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/stock_and_straighten_shelf",
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/stock_and_straighten_shelf_part_2",
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/place_block_into_box",
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/sorting_packages_part_1",
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/sorting_packages_part_2",
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/sorting_packages_part_3",
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/clean_the_desktop_part_1",
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/clean_the_desktop_part_2",
+                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/clean_the_desktop_addition"
             ],
-            # Set the asset dir to specify normalization stats calculated from the dataset
+            # Set the asset dir to specify normalization stats calculated from the dataset.
+            # asset_id="." loads norm_stats.json from assets_dir itself (otherwise repo_id absolute paths
+            # would ignore assets_dir; see DataConfigFactory._load_norm_stats).
             assets=AssetsConfig(
-                assets_dir=None,
+                assets_dir="/data/checkpoints/baseline/30000/assets",
+                asset_id=".",
             ),
             # this line defines a mapping from task name to (prompt, probability of replacement) for training. 
             # If the current episode's task name matches one of the keys in the mapping, then with the corresponding probability, 
@@ -1907,7 +1925,7 @@ _CONFIGS = [
             delta_action_mask = _transforms.make_bool_mask(14, -18)
         ),
         lr_schedule = _optimizer.CosineDecaySchedule(
-            warmup_steps = 10_000,
+            warmup_steps = 0,
             peak_lr = 5e-5,
             decay_steps = 1_000_000,
             decay_lr = 5e-5,
@@ -1915,12 +1933,12 @@ _CONFIGS = [
         optimizer = _optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay = 0.999,
         weight_loader = weight_loaders.ACOTCheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_base/params"
+            "/data/checkpoints/baseline/30000/params"
         ),
         num_train_steps = 50_000,
-        save_interval = 5000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
-        num_workers = 24 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
-        batch_size = 256 if not os.getenv("DEBUG_MODE", default=False) == "true" else 16,
+        save_interval = 10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
+        num_workers = 32 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
+        batch_size = 64 if not os.getenv("DEBUG_MODE", default=False) == "true" else 16,
         # You can select to freeze certain parts of the model during training by setting the corresponding flags to True
         freeze_filter = acot_vla.ACOTConfig(paligemma_variant="gemma_2b_lora").get_freeze_filter(
             freeze_vision = False, freeze_llm = True, freeze_llm_embedder=True, freeze_dual_ae=[False, False]
