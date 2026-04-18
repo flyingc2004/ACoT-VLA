@@ -4,7 +4,7 @@ import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 
 
 RESET_KEYWORDS = ("reset", "return", "default")
-CONTINUOUS_KEYWORDS = ("continuous", "continous")
+CONTINUOUS_KEYWORDS = ("packages", "sort")
 RESET_TRUNCATE_THRESHOLD = 90
 RESET_TRUNCATE_TO = 45
 RESET_TRUNCATION_MODES = ("auto", "always", "never")
@@ -29,54 +29,7 @@ def _iter_string_values(obj):
         for value in obj:
             yield from _iter_string_values(value)
 
-
-def _dataset_text_hints(ds):
-    hints = []
-
-    # Paths and repo identifiers often include "continuous".
-    repo_id = getattr(ds, "repo_id", None)
-    if repo_id is not None:
-        hints.extend(_iter_string_values(repo_id))
-
-    meta = getattr(ds, "meta", None)
-    if meta is None:
-        return hints
-
-    tasks = getattr(meta, "tasks", None)
-    if tasks is not None:
-        hints.extend(_iter_string_values(tasks))
-
-    info = getattr(meta, "info", None)
-    if isinstance(info, dict):
-        for key in ("task", "task_name", "dataset_name", "repo_id", "name", "description"):
-            if key in info:
-                hints.extend(_iter_string_values(info[key]))
-
-    return [h for h in hints if isinstance(h, str)]
-
-
-def _is_continuous_dataset(ds):
-    for text in _dataset_text_hints(ds):
-        lower = text.lower()
-        if any(keyword in lower for keyword in CONTINUOUS_KEYWORDS):
-            return True
-    return False
-
-
-def _should_disable_reset_truncation(ds, reset_truncation_mode):
-    if reset_truncation_mode == "always":
-        return False
-    if reset_truncation_mode == "never":
-        return True
-    if reset_truncation_mode == "auto":
-        return _is_continuous_dataset(ds)
-    raise ValueError(
-        f"Invalid reset truncation mode: {reset_truncation_mode}. "
-        f"Expected one of {RESET_TRUNCATION_MODES}."
-    )
-
-
-def sample_subtask(dataset, reset_truncation_mode="auto"):
+def sample_subtask(dataset):
     valid_intervals = []
     base_ds = get_base_dataset(dataset)
     
@@ -95,20 +48,13 @@ def sample_subtask(dataset, reset_truncation_mode="auto"):
 
     for sub_ds in sub_datasets:
         inner_ds = get_base_dataset(sub_ds)
-        disable_reset_truncation = _should_disable_reset_truncation(inner_ds, reset_truncation_mode)
-        if disable_reset_truncation:
-            if reset_truncation_mode == "auto":
-                print("Detected continuous dataset; reset-like subtask truncation is disabled.")
-            else:
-                print("Reset-like subtask truncation is disabled by config.")
-        
         instruction_segment = inner_ds.meta.info.get('instruction_segments', {})
         episode_data_index = inner_ds.episode_data_index
         num_episodes = len(episode_data_index['from'])
         
         for ep_idx in range(num_episodes):
             local_episode_start = episode_data_index['from'][ep_idx].item()
-            
+            disable_reset_truncation = True
             if str(ep_idx) not in instruction_segment:
                 continue
 
@@ -118,6 +64,8 @@ def sample_subtask(dataset, reset_truncation_mode="auto"):
                 local_end = subtask["success_frame_index"] + local_episode_start
                 
                 instruction = subtask["instruction"].lower()
+                if any(k in instruction for k in CONTINUOUS_KEYWORDS):
+                    disable_reset_truncation = False
                 is_reset = any(k in instruction for k in RESET_KEYWORDS)
                 
                 if is_reset and not disable_reset_truncation:
@@ -156,7 +104,7 @@ class FrameSampler(torch.utils.data.Sampler):
             intervals: List of (start_index, end_index) tuples
         """
         if sampler_type == 'subtask':
-            return sample_subtask(dataset, self.reset_truncation_mode)
+            return sample_subtask(dataset)
         else:
             raise ValueError(f"Invalid sampler type: {sampler_type}")
 
