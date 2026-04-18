@@ -6,9 +6,13 @@ from collections.abc import Sequence
 import numpy as np
 import torch
 import copy
+import re
 
 import openpi.models.model as _model
 import openpi.transforms as transforms
+
+
+SORT_PACKAGE_COLOR_PATTERN = re.compile(r"\b(white|red|black|yellow)\b", re.IGNORECASE)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -108,7 +112,7 @@ class Go2ACOTInputs(transforms.DataTransformFn):
 
     state_mask: np.ndarray | None = None
     action_mask: np.ndarray | None = None
-    prompt_map_inject_to_training: dict[str, str] | None = None
+    prompt_map_inject_to_training: dict[str, Sequence[object]] | None = None
 
     EXPECTED_CAMERAS: ClassVar[tuple[str, ...]] = ("top_head", "hand_left", "hand_right")
 
@@ -118,6 +122,18 @@ class Go2ACOTInputs(transforms.DataTransformFn):
         "hand_right": "right_wrist_0_rgb"
     }
     acot_action_generation: Sequence[Sequence[int]] | None = None
+
+    def _extract_color_from_segment(self, data: dict) -> str | None:
+        # Prefer segment-level instruction text. Fallback to current prompt when available.
+        candidate_fields = ("segment_instructions", "prompt")
+        for key in candidate_fields:
+            raw_text = data.get(key)
+            if not isinstance(raw_text, str):
+                continue
+            match = SORT_PACKAGE_COLOR_PATTERN.search(raw_text)
+            if match is not None:
+                return match.group(1).lower()
+        return None
 
     def slice_state_and_action(self, data):
         # Slice the state and action to the expected dimensions based on the original data shape
@@ -136,41 +152,31 @@ class Go2ACOTInputs(transforms.DataTransformFn):
         return data
     
     def random_inject_prompt(self, data):
-        color_episode_pairs_for_task_sort_packages = {
-            'white': [
-                0, 9, 11, 15, 18, 19, 22, 34, 39, 41, 49, 52, 55, 62, 66, 68, 69, 73, 74, 81, 90, 96, 111, 120, 123, 125, \
-                126, 129, 137, 139, 145, 149, 156, 157, 158, 164, 166, 170, 185, 187, 188, 190, 202, 207, 208, 209, 211, \
-                213, 218, 220, 221, 226, 227, 228, 229, 230, 236, 246, 250, 251, 252, 260, 264, 266, 274, 275, 279, 282, 283
-            ],
-            'red': [
-                1, 3, 5, 12, 13, 23, 24, 25, 26, 27, 28, 33, 38, 51, 53, 57, 58, 59, 61, 64, 76, 77, 80, 82, 84, 87, 91, 100, 102, 103, 105, \
-                110, 114, 116, 118, 128, 142, 143, 148, 150, 152, 162, 163, 165, 167, 168, 173, 174, 176, 179, 186, 191, 192, 194, 197, 199, \
-                205, 206, 214, 217, 222, 224, 234, 237, 238, 240, 241, 242, 243, 244, 247, 248, 253, 257, 262, 268, 270, 272, 273, 276, 277, 278, 284
-            ],
-            'black': [
-                2, 14, 16, 17, 20, 29, 30, 31, 32, 37, 40, 42, 43, 44, 45, 46, 47, 48, 50, 56, 60, 65, 67, 70, 71, 72, 75, 78, 79, 83, 85, 88, \
-                92, 95, 97, 99, 104, 107, 109, 112, 115, 117, 119, 122, 124, 127, 131, 132, 140, 141, 146, 147, 151, 155, 159, 160, 171, 172, 175, \
-                177, 178, 180, 183, 184, 200, 203, 210, 212, 225, 233, 235, 245, 254, 255, 256, 259, 261, 263, 267, 269, 271, 280
-            ],
-            'yellow': [
-                4, 6, 7, 8, 10, 21, 35, 36, 54, 63, 86, 89, 93, 94, 98, 101, 106, 108, 113, 121, 130, 133, 134, 135, 136, 138, 144, 153, \
-                154, 161, 169, 181, 182, 189, 193, 195, 196, 198, 201, 204, 215, 216, 219, 223, 231, 232, 239, 249, 258, 265, 281, 285
-            ]
-        }
-
         task_name = data["task"]
-        episode_idx = data["episode_index"]
         if self.prompt_map_inject_to_training is not None and task_name in self.prompt_map_inject_to_training:
-            default_prompt = self.prompt_map_inject_to_training[task_name][0]
-            inject_prob = self.prompt_map_inject_to_training[task_name][1]
+            mapping = self.prompt_map_inject_to_training[task_name]
+            if len(mapping) < 2:
+                return data
 
-            if task_name == "Sort packages":
-                for key, value in color_episode_pairs_for_task_sort_packages.items():
-                    if episode_idx in value:
-                        default_prompt = default_prompt.replace("<color>", key)
-                        break
+            default_prompt = mapping[0]
+            inject_prob = mapping[1]
+            if not isinstance(default_prompt, str):
+                return data
+            if isinstance(inject_prob, (int, float, np.floating, str)):
+                try:
+                    inject_prob_value = float(inject_prob)
+                except ValueError:
+                    return data
+            else:
+                return data
 
-            if np.random.rand() < inject_prob:
+            if isinstance(default_prompt, str) and "<color>" in default_prompt:
+                detected_color = self._extract_color_from_segment(data)
+                if detected_color is None:
+                    return data
+                default_prompt = default_prompt.replace("<color>", detected_color)
+
+            if np.random.rand() < inject_prob_value:
                 data["prompt"] = default_prompt
     
         return data

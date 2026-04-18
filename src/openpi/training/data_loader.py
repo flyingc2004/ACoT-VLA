@@ -202,8 +202,13 @@ def create_torch_dataset(
         )
         if data_config.prompt_from_task:
             for n, d in enumerate(dataset._datasets):
+                segment_map = dataset_metas[n].info.get("instruction_segments", {})
                 dataset._datasets[n] = TransformedDataset(
-                    d, [_transforms.PromptFromLeRobotTask(dataset_metas[n].tasks)]
+                    d,
+                    [
+                        _transforms.PromptFromLeRobotTask(dataset_metas[n].tasks),
+                        _transforms.SegmentInstructionFromHighlevelInstruction(segment_map),
+                    ],
                 )
         if data_config.prompt_from_hl_instruction:
             for n, d in enumerate(dataset._datasets):
@@ -224,7 +229,15 @@ def create_torch_dataset(
         )
 
         if data_config.prompt_from_task:
-            dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+            dataset = TransformedDataset(
+                dataset,
+                [
+                    _transforms.PromptFromLeRobotTask(dataset_meta.tasks),
+                    _transforms.SegmentInstructionFromHighlevelInstruction(
+                        dataset_meta.info.get("instruction_segments", {})
+                    ),
+                ],
+            )
         if data_config.prompt_from_hl_instruction:
             dataset = TransformedDataset(dataset, [_transforms.PromptFromHighlevelInstruction(dataset_meta.info['instruction_segments'])])
 

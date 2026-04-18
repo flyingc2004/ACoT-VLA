@@ -1859,35 +1859,31 @@ _CONFIGS = [
             # This allows for more diverse and potentially more informative prompts during training.
             prompt_map_inject_to_training = {
                 # task name: (prompt to replace vanilla annotation, probability to replace)
-                "Unload workpiece_icra_SIM": ("Pour the workpiece into the box", 0.5),
-                "Turn the doorknob": ("Turn the doorknob and push the door", 0.5),
-                "Make popcorn": ("Scoop the popcorn and pour it into the popcorn bucket", 0.5),
-                "Carry the pot": ("Grasp the two handles of the pot and place it on the stove", 0.5),
+                "Flip workpiece_icra_SIM": ("Pour the workpiece into the box", 1),
+                "Turn the doorknob": ("Turn the doorknob and push the door", 1),
+                "Pop the popcorn": ("Scoop the popcorn and pour it into the popcorn bucket", 1),
+                "Carry the pot": ("Grasp the two handles of the pot and place it on the stove", 1),
 
-                "Insert building block holes_2_SIM": (
-                    "Pick up the yellow circular block from the table, "
-                    "and place it into the round hole of the block box",
-                    0.2
+                "Insert the building block socket_2_SIM": (
+                    "Left arm pick up the yellow circular block from the table and place it into the round hole of the block box",
+                    1
                 ),
                 "Remove misplaced beverages from shelves": (
-                    "Pick up the incorrectly placed item from the shelf, "
-                    "and place it into the shopping basket",
-                    0.2
+                    "Right arm picks up the incorrectly placed item from the shelf and place it into the shopping basket",
+                    1
                 ),
-                "Stock supermarket shelves  \nStraighten products  \nAttend ICRA conference  \nOperate SIM card": (
-                    "Pick up the wei-chuan orange juice in the shopping basket, "
-                    "and place it on the shelf. "
-                    "Then, straighten the toppled wei-chuan grape juice",
-                    0.2
+                "Stock shelves\nStraighten objects\nIdentify ICRA (or Recognize ICRA, depending on context)\nAn object": (
+                    "Right arm pick up the wei-chuan orange juice in the shopping basket and place it on the shelf, Then, right arm straighten the toppled wei-chuan grape juice",
+                    1
                 ),
-                "Sort packages": (
-                    "Grab the <color> package on the table, "
-                    "turn the waist right to face the barcode scanner, "
-                    "place the package on the scanning table with the barcode facing up. "
-                    "Then, grab the package, "
-                    "rotate the waist and place the package in the blue bin. "
-                    "Finally, return the waist back to face the initial table",
-                    0.2
+                "Stock shelves_Straighten_ICRA_An object": (
+                    "Right arm pick up the wei-chuan orange juice in the shopping basket and place it on the shelf, Then, right arm straighten the toppled wei-chuan grape juice",
+                    1
+                ),
+
+                "Sort logistics parcels": (
+                    "Grab the <color> package on the table, turn the waist right to face the barcode scanner, place the package on the scanning table with the barcode facing up. Then, grab the package, rotate the waist and place the package in the blue bin. Finally, return the waist back to face the initial table",
+                    1
                 ),
 
                 "Clear the desktop": (
@@ -1896,7 +1892,7 @@ _CONFIGS = [
                     "pick up the tissue on the table and place it into the trash bin on the right size. "
                     "Then, pick up the mouse and place it on the right side of the laptop. "
                     "Finally, straighten the colored pencil box",
-                    0.5
+                    1
                 ),
             },
             repack_transforms =_transforms.Group(
@@ -1911,6 +1907,7 @@ _CONFIGS = [
                             "state": "observation.state",
                             "actions": "action",
                             "prompt": "prompt",
+                            "segment_instruction": "segment_instruction",
                             # repack task name and episode id here for specific prompt replacement in training
                             "task": "task",
                             "episode_index": "episode_index"
@@ -1919,7 +1916,7 @@ _CONFIGS = [
                 ]
             ),
             # this line allows using episode level annotation for training, essential for instruction following
-            base_config = DataConfig(dataloader_sampler = "subtask", prompt_from_hl_instruction = True),
+            base_config = DataConfig(dataloader_sampler = "subtask", prompt_from_task=True),
             # this line is important for action cot training, it shifts the action sequence by a certain number of steps 
             # to create the input for the coarse action reasoner and the final action head. 
             # You can tune these values based on the characteristics of your dataset. 
