@@ -4,6 +4,7 @@ import pathlib
 import time
 from typing import Any, TypeAlias
 import copy
+import traceback
 import flax
 import flax.traverse_util
 import jax
@@ -14,6 +15,7 @@ from typing_extensions import override
 
 from openpi import transforms as _transforms
 from openpi.models import model as _model
+from openpi.policies.sorting_phase_state_machine import SortingContinuousPromptController
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 from PIL import Image
@@ -38,12 +40,33 @@ class Policy(BasePolicy):
         self._rng = rng or jax.random.key(0)
         self._sample_kwargs = sample_kwargs or {}
         self._metadata = metadata or {}
+        self._sorting_prompt_controller: SortingContinuousPromptController | None = None
+        try:
+            self._sorting_prompt_controller = SortingContinuousPromptController.from_env()
+        except Exception:  # pylint: disable=broad-exception-caught
+            logging.warning("Failed to initialize sorting prompt controller:\n%s", traceback.format_exc())
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
-        logging.info(f"Task name: {inputs['task_name']}")
+        logging.info("Task name: %s", inputs.get("task_name", ""))
+
+        # For sorting continuous tasks, update prompt by two-state machine:
+        # state0 --(task_terminal)--> state1 --(already_reset)--> state0 and switch to next color.
+        if self._sorting_prompt_controller is not None:
+            updated_prompt, phase_pred = self._sorting_prompt_controller.step(inputs)
+            if phase_pred is not None:
+                logging.info(
+                    "Sorting phase prediction: label=%s conf=%.4f",
+                    phase_pred.label,
+                    phase_pred.confidence,
+                )
+            if updated_prompt is not None:
+                print(f"updated prompt: {updated_prompt}")
+                inputs["prompt"] = updated_prompt
+                logging.info("Updated sorting continuous prompt to: %s", updated_prompt)
+
         # Debug: save top_head to PNG. PIL needs (H,W) or (H,W,C) with C in {1,3,4}.
         img = inputs["images"]["top_head"]
         img_np = np.asarray(img)

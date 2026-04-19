@@ -100,6 +100,9 @@ class WebsocketPolicyServer:
         # Reset per-connection temporal state.
         self._reset_temporal_state()
         self._last_episode_index = None
+        # Some policies post-process action dims (e.g., trim waist DOF), which can make
+        # warm-start VP noise shape-incompatible with model-side expected noise.
+        vp_noise_enabled = self._use_vp_noise
         
         packer = msgpack_numpy.Packer()
 
@@ -120,11 +123,19 @@ class WebsocketPolicyServer:
                 infer_time = 0.0
                 if not self._action_buffer:
                     infer_start = time.monotonic()
-                    if self._use_vp_noise and self._prev_noise is not None:
+                    if vp_noise_enabled and self._prev_noise is not None:
                         try:
                             infer_result = self._policy.infer(obs, noise=self._prev_noise)
                         except TypeError:
                             infer_result = self._policy.infer(obs)
+                        except ValueError as exc:
+                            if "noise shape mismatch" in str(exc):
+                                logger.warning("Disabling VP noise for this connection: %s", exc)
+                                self._prev_noise = None
+                                vp_noise_enabled = False
+                                infer_result = self._policy.infer(obs)
+                            else:
+                                raise
                     else:
                         infer_result = self._policy.infer(obs)
                     infer_time = time.monotonic() - infer_start
@@ -137,7 +148,7 @@ class WebsocketPolicyServer:
                     if chunk_arr.ndim == 1:
                         chunk_arr = chunk_arr[None, :]
 
-                    if self._use_vp_noise:
+                    if vp_noise_enabled:
                         # Generate warm-start noise in float32; model side will cast to runtime dtype.
                         eps = np.random.randn(*chunk_arr.shape).astype(np.float32)
                         if self._prev_noise is None or self._prev_noise.shape != chunk_arr.shape:

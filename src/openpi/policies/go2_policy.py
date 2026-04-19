@@ -125,7 +125,7 @@ class Go2ACOTInputs(transforms.DataTransformFn):
 
     def _extract_color_from_segment(self, data: dict) -> str | None:
         # Prefer segment-level instruction text. Fallback to current prompt when available.
-        candidate_fields = ("segment_instructions", "prompt")
+        candidate_fields = ("segment_instruction", "segment_instructions", "prompt")
         for key in candidate_fields:
             raw_text = data.get(key)
             if not isinstance(raw_text, str):
