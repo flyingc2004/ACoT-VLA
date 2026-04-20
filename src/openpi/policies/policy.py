@@ -4,6 +4,7 @@ import pathlib
 import time
 from typing import Any, TypeAlias
 import copy
+import traceback
 import flax
 import flax.traverse_util
 import jax
@@ -14,6 +15,7 @@ from typing_extensions import override
 
 from openpi import transforms as _transforms
 from openpi.models import model as _model
+from openpi.policies.sorting_phase_state_machine import SortingContinuousPromptController
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 from PIL import Image
@@ -38,12 +40,67 @@ class Policy(BasePolicy):
         self._rng = rng or jax.random.key(0)
         self._sample_kwargs = sample_kwargs or {}
         self._metadata = metadata or {}
+        self._sorting_prompt_controller: SortingContinuousPromptController | None = None
+        try:
+            self._sorting_prompt_controller = SortingContinuousPromptController.from_env()
+        except Exception:  # pylint: disable=broad-exception-caught
+            logging.warning("Failed to initialize sorting prompt controller:\n%s", traceback.format_exc())
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
-        logging.info(f"Task name: {inputs['task_name']}")
+        logging.info("Task name: %s", inputs.get("task_name", ""))
+
+        # For sorting continuous tasks, update prompt by two-state machine:
+        # state0 --(task_terminal)--> state1 --(already_reset)--> state0 and switch to next color.
+        if self._sorting_prompt_controller is not None:
+            updated_prompt, phase_pred = self._sorting_prompt_controller.step(inputs)
+            if phase_pred is not None:
+                logging.info(
+                    "Sorting phase prediction: label=%s conf=%.4f",
+                    phase_pred.label,
+                    phase_pred.confidence,
+                )
+            if updated_prompt is not None:
+                print(f"updated prompt: {updated_prompt}")
+                inputs["prompt"] = updated_prompt
+                logging.info("Updated sorting continuous prompt to: %s", updated_prompt)
+
+        # There are other tasks that requires prompt mapping, we need to add them here
+
+        prompt_mapping = {
+            "pour_workpiece": "Pour the workpiece into the box",
+            "open_door": "Turn the doorknob and push the door",
+            "scoop_popcorn": "Scoop the popcorn and pour it into the popcorn bucket",
+            "hold_pot": "Grasp the two handles of the pot and place it on the stove",
+            "place_block_into_box": (
+                "Left arm pick up the yellow circular block from the table and "
+                "place it into the round hole of the block box"
+            ),
+            "take_wrong_item_shelf": (
+                "Right arm picks up the incorrectly placed item from the shelf "
+                "and place it into the shopping basket"
+            ),
+            "stock_and_straighten_shelf": (
+                "Right arm pick up the wei-chuan orange juice in the shopping basket "
+                "and place it on the shelf, Then, right arm straighten the toppled "
+                "wei-chuan grape juice"
+            ),
+            "clean_the_desktop": (
+                "Pick up the pen on the left side and place it into the pen holder, "
+                "close the laptop, pick up the tissue on the table and place it into "
+                "the trash bin on the right size. Then, pick up the mouse and place "
+                "it on the right side of the laptop. Finally, straighten the colored "
+                "pencil box"
+            ),
+        }
+
+        task_name = str(inputs.get("task_name", "")).strip()
+        if task_name in prompt_mapping:
+            new_prompt = prompt_mapping[task_name]
+            inputs["prompt"] = new_prompt
+
         # Debug: save top_head to PNG. PIL needs (H,W) or (H,W,C) with C in {1,3,4}.
         img = inputs["images"]["top_head"]
         img_np = np.asarray(img)

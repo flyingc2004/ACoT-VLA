@@ -3,6 +3,7 @@ assets/
 checkpoints/
 data/
 wandb/
+sorting_phase_dataset/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -170,3 +171,4 @@ cython_debug/
 logs/
 *exps*
 .vscode/
+*.png
