@@ -1,7 +1,6 @@
 cart_num=${1:-4}
 port=${2:-8999}
 
-export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export TF_NUM_INTRAOP_THREADS=16
 export CUDA_VISIBLE_DEVICES=${cart_num}
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
