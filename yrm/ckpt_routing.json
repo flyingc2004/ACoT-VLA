@@ -4,24 +4,24 @@
     "checkpoints": {
       "baseline": {
         "config": "acot_icra_simulation_challenge_reasoning_to_action",
-        "path": "/mnt/sdc/xhz/ACoT-VLA/checkpoints/baseline/30000"
+        "path": "checkpoints/test/19999"
       },
-      "five_tasks": {
+      "sort": {
         "config": "acot_icra_simulation_challenge_reasoning_to_action",
-        "path": "/mnt/sdc/xhz/ACoT-VLA/checkpoints/icra/test/19999"
-      },
-      "stock_and_straighten_shelf": {
-        "config": "acot_icra_simulation_challenge_reasoning_to_action",
-        "path": "/mnt/sdc/xhz/ACoT-VLA/checkpoints/icra/stock_and_straighten_shelf/19999"
+        "path": "checkpoints/final/49999"
       }
     },
     "route_by_task_name": {
-      "open_door": "five_tasks",
-      "pour_workpiece": "five_tasks",
-      "scoop_popcorn": "five_tasks",
-      "take_wrong_item_shelf": "five_tasks",
-      "hold_pot": "five_tasks",
-      "stock_and_straighten_shelf": "stock_and_straighten_shelf"
+      "open_door": "baseline",
+      "pour_workpiece": "baseline",
+      "scoop_popcorn": "baseline",
+      "take_wrong_item_shelf": "baseline",
+      "hold_pot": "baseline",
+      "stock_and_straighten_shelf": "sort",
+      "sorting_packages": "sort",
+      "sorting_packages_continuous": "sort",
+      "clean_the_desktop": "sort",
+      "place_block_into_box": "sort"
     },
     "route_by_prompt_exact": {},
     "route_by_prompt_contains": {}

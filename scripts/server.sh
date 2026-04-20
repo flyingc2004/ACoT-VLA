@@ -1,5 +1,5 @@
 cart_num=${1:-4}
-port=${2:-8998}
+port=${2:-8999}
 
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 export TF_NUM_INTRAOP_THREADS=16
@@ -9,4 +9,4 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 export XLA_FLAGS="--xla_gpu_autotune_level=0"
 
-GIT_LFS_SKIP_SMUDGE=1 uv run python scripts/serve_policy.py --env G2SIM --port ${port} 
+GIT_LFS_SKIP_SMUDGE=1 uv run python scripts/serve_policy.py --env G2SIM --port ${port} --checkpoint_routing yrm/ckpt_routing.json

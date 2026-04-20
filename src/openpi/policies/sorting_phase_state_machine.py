@@ -189,10 +189,10 @@ class SortingContinuousPromptController:
         device = os.getenv("SORTING_PHASE_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
         prompt_template = os.getenv("SORTING_CONTINUOUS_PROMPT_TEMPLATE", "Grab the <color> package on the table, turn the waist right to face the barcode scanner, place the package on the scanning table with the barcode facing up. Then, grab the package, rotate the waist and place the package in the blue bin. Finally, return the waist back to face the initial table")
 
-        raw_cycle = os.getenv("SORTING_COLOR_CYCLE", "black, red, yellow, white")
+        raw_cycle = os.getenv("SORTING_COLOR_CYCLE", "black, red, yellow")
         color_cycle = tuple([c.strip().lower() for c in raw_cycle.split(",") if c.strip()])
         if not color_cycle:
-            color_cycle = ("black", "red", "yellow", "white")
+            color_cycle = ("black", "red", "yellow")
 
         raw_keywords = os.getenv(
             "SORTING_CONTINUOUS_TASK_KEYWORDS",
@@ -215,17 +215,11 @@ class SortingContinuousPromptController:
         )
 
     def _is_continuous_task(self, task_name: str, prompt: str) -> bool:
-        task_name = task_name.lower()
         prompt = prompt.lower()
-        if any(k in task_name for k in self.task_keywords) or "sort packages" in prompt:
+        if "sort packages" in prompt:
             return True
 
-        # Fallback for evaluation streams that omit task_name but keep sorting prompts.
-        has_sorting_style_prompt = (
-            SORTING_COLOR_PATTERN.search(prompt) is not None
-            and ("package" in prompt)
-        )
-        return has_sorting_style_prompt
+        return False
 
     def _extract_top_head_image(self, obs: dict) -> Any | None:
         images = obs.get("images")
