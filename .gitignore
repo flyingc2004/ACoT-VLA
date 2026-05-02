@@ -170,3 +170,7 @@ cython_debug/
 logs/
 *exps*
 .vscode/
+# Local clones
+/openpi/
+/openpi_subtask_generation/
+.codex

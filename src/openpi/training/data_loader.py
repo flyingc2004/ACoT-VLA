@@ -1,4 +1,5 @@
 from collections.abc import Iterator, Sequence
+import copy
 import multiprocessing
 import os
 import typing
@@ -99,6 +100,44 @@ class TransformedDataset(Dataset[T_co]):
             for item in self._dataset._datasets:
                 length += len(item)
         return length
+
+
+class TwoStageTransformedDataset(Dataset):
+    """Applies separate stage-1 subtask and stage-2 action transform pipelines."""
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        *,
+        stage1_transforms: Sequence[_transforms.DataTransformFn],
+        stage2_transforms: Sequence[_transforms.DataTransformFn],
+    ):
+        self._dataset = dataset
+        self._stage1_transform = _transforms.compose(stage1_transforms)
+        self._stage2_transform = _transforms.compose(stage2_transforms)
+
+    def _get_item(self, index: SupportsIndex):
+        if not hasattr(self._dataset, "_datasets"):
+            return self._dataset[index]
+
+        idx = index.__index__()
+        for d in self._dataset._datasets:
+            if idx < len(d):
+                return d[idx]
+            idx -= len(d)
+        raise IndexError("Index out of range")
+
+    def __getitem__(self, index: SupportsIndex):
+        item = self._get_item(index)
+        stage1 = self._stage1_transform(copy.deepcopy(item))
+        stage2 = self._stage2_transform(copy.deepcopy(item))
+        stage2.pop("subtask", None)
+        return stage1, stage2
+
+    def __len__(self) -> int:
+        if not hasattr(self._dataset, "_datasets"):
+            return len(self._dataset)
+        return sum(len(item) for item in self._dataset._datasets)
 
 
 class IterableTransformedDataset(IterableDataset[T_co]):
@@ -257,15 +296,26 @@ def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip
             )
         norm_stats = data_config.norm_stats
 
-    return TransformedDataset(
-        dataset,
-        [
+    stage2_transforms = [
             *data_config.repack_transforms.inputs,
             *data_config.data_transforms.inputs,
             _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
             *data_config.model_transforms.inputs,
-        ],
-    )
+    ]
+
+    if data_config.model_transforms.high_level_inputs:
+        return TwoStageTransformedDataset(
+            dataset,
+            stage1_transforms=[
+                *data_config.repack_transforms.inputs,
+                *data_config.data_transforms.inputs,
+                _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+                *data_config.model_transforms.high_level_inputs,
+            ],
+            stage2_transforms=stage2_transforms,
+        )
+
+    return TransformedDataset(dataset, stage2_transforms)
 
 
 def transform_iterable_dataset(
@@ -609,4 +659,11 @@ class DataLoaderACOTImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
-            yield _model.Observation.from_dict(batch), batch["actions"], batch["coarse_actions"]
+            if isinstance(batch, tuple):
+                stage1_dict, stage2_dict = batch
+                yield (
+                    _model.Observation.from_dict(stage1_dict),
+                    _model.Observation.from_dict(stage2_dict),
+                ), stage2_dict["actions"], stage2_dict["coarse_actions"]
+            else:
+                yield _model.Observation.from_dict(batch), batch["actions"], batch["coarse_actions"]

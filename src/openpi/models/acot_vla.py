@@ -286,6 +286,12 @@ class ACOTConfig(_model.BaseModelConfig):
     attention_pooling_implicit_extractor: bool = False  # type: ignore
     downsample_based_implicit_extractor: bool = False  # type: ignore
 
+    enable_subtask_generation: bool = False
+    subtask_max_decoding_steps: int = 25
+    subtask_temperature: float = 0.1
+    subtask_ce_loss_weight: float = 0.1
+    subtask_use_state_input: bool = False
+
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
@@ -324,6 +330,16 @@ class ACOTConfig(_model.BaseModelConfig):
                 state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
                 tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
                 tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], bool),
+                token_ar_mask=(
+                    jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32)
+                    if self.enable_subtask_generation
+                    else None
+                ),
+                token_loss_mask=(
+                    jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.bool_)
+                    if self.enable_subtask_generation
+                    else None
+                ),
             )
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 
@@ -510,6 +526,10 @@ class ACOT_VLA(_model.BaseModel):
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
         self.coarse_action_horizon = config.coarse_action_horizon
+        self.enable_subtask_generation = config.enable_subtask_generation
+        self.subtask_max_decoding_steps = config.subtask_max_decoding_steps
+        self.subtask_temperature = config.subtask_temperature
+        self.subtask_ce_loss_weight = config.subtask_ce_loss_weight
 
 
     @at.typecheck
@@ -546,6 +566,124 @@ class ACOT_VLA(_model.BaseModel):
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
         return tokens, input_mask, ar_mask
+
+    @at.typecheck
+    def embed_high_level_prefix(
+        self, obs: _model.Observation
+    ) -> tuple[at.Float[at.Array, "b s emb"], at.Bool[at.Array, "b s"], at.Int[at.Array, "b s"]]:
+        input_mask = []
+        ar_mask = []
+        tokens = []
+
+        for name in obs.images:
+            image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
+            tokens.append(image_tokens)
+            image_mask = einops.repeat(obs.image_masks[name], "b -> b s", s=image_tokens.shape[1])
+            input_mask.append(image_mask)
+            ar_mask.append(jnp.zeros_like(image_mask, dtype=jnp.int32))
+
+        assert obs.tokenized_prompt is not None, "Tokenized prompt is required for subtask generation"
+        assert obs.tokenized_prompt_mask is not None, "Tokenized prompt mask is required for subtask generation"
+        tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
+        tokens.append(tokenized_inputs)
+        input_mask.append(obs.tokenized_prompt_mask)
+        if obs.token_ar_mask is not None:
+            ar_mask.append(obs.token_ar_mask.astype(jnp.int32))
+        else:
+            ar_mask.append(jnp.ones_like(obs.tokenized_prompt, dtype=jnp.int32))
+
+        return (
+            jnp.concatenate(tokens, axis=1),
+            jnp.concatenate(input_mask, axis=1),
+            jnp.concatenate(ar_mask, axis=1),
+        )
+
+    def _compute_subtask_ce_loss(
+        self, rng: at.KeyArrayLike, observation: _model.Observation, train: bool = False
+    ) -> at.Float[at.Array, " b"]:
+        observation = _model.preprocess_observation(rng, observation, train=train)
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_high_level_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+
+        targets = jax.nn.one_hot(
+            observation.tokenized_prompt[:, 1:],
+            self.PaliGemma.llm.module.vocab_size,
+        )
+        (prefix_out, _, _), _ = self.PaliGemma.llm(
+            [prefix_tokens, None, None],
+            mask=prefix_attn_mask,
+            positions=positions,
+            adarms_cond=[None, None, None],
+        )
+        prefix_out = prefix_out[:, :-1]
+        logits = self.PaliGemma.llm(prefix_out[:, -targets.shape[1] :], method="deembed")
+        logp = jax.nn.log_softmax(logits, axis=-1)
+
+        assert observation.token_loss_mask is not None, "Token loss mask is required for subtask CE loss"
+        loss_mask = observation.token_loss_mask[:, 1:]
+        token_logp = jnp.sum(targets * logp, axis=-1)
+        return -jnp.sum(token_logp * loss_mask, axis=-1) / jnp.clip(jnp.sum(loss_mask, axis=-1), 1)
+
+    @override
+    def sample_low_level_task(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        max_decoding_steps: int = 25,
+        paligemma_eos_token: int = 1,
+        temperature: float = 0.0,
+    ):
+        observation = _model.preprocess_observation(None, observation, train=False)
+        batch_size = observation.tokenized_prompt.shape[0]
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_high_level_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+
+        (prefix_out, _, _), kv_cache = self.PaliGemma.llm(
+            [prefix_tokens, None, None],
+            mask=prefix_attn_mask,
+            positions=positions,
+            adarms_cond=[None, None, None],
+        )
+        last_logits = self.PaliGemma.llm(prefix_out[:, -1:], method="deembed")
+        output_tokens = jnp.zeros((batch_size, max_decoding_steps), dtype=jnp.int32)
+        active = jnp.ones((batch_size, 1), dtype=jnp.bool_)
+
+        for step in range(max_decoding_steps):
+            rng, step_rng = jax.random.split(rng)
+            token = jax.lax.cond(
+                temperature > 0.0,
+                lambda _: jax.random.categorical(step_rng, last_logits / temperature, axis=-1),
+                lambda _: jnp.argmax(last_logits, axis=-1),
+                operand=None,
+            ).astype(jnp.int32)
+            token = jnp.where(active, token, jnp.zeros_like(token))
+            output_tokens = output_tokens.at[:, step].set(token[:, 0])
+
+            token_embedding = self.PaliGemma.llm(token, method="embed")
+            generated_mask = output_tokens[:, : step + 1] != 0
+            decode_mask = jnp.concatenate([prefix_mask, generated_mask], axis=1)[:, None, :]
+            decode_positions = jnp.sum(prefix_mask, axis=-1)[:, None] + step
+
+            (prefix_out, _, _), kv_cache = self.PaliGemma.llm(
+                [token_embedding, None, None],
+                mask=decode_mask,
+                positions=decode_positions,
+                kv_cache=kv_cache,
+                adarms_cond=[None, None, None],
+            )
+            last_logits = self.PaliGemma.llm(prefix_out[:, -1:], method="deembed")
+            active = jnp.logical_and(active, token != paligemma_eos_token)
+
+        generated_mask = output_tokens != 0
+        full_mask = jnp.concatenate([prefix_mask, generated_mask], axis=1)
+        full_ar_mask = jnp.concatenate(
+            [prefix_ar_mask, jnp.ones((batch_size, max_decoding_steps), dtype=jnp.int32)],
+            axis=1,
+        )
+        return output_tokens, kv_cache, full_mask, full_ar_mask
 
     @at.typecheck
     def embed_suffix(
@@ -696,7 +834,9 @@ class ACOT_VLA(_model.BaseModel):
         self, rng: at.KeyArrayLike,
         observation: _model.Observation,
         actions: _model.Actions,
-        coarse_actions: _model.CoarseActions, *, train: bool = False
+        coarse_actions: _model.CoarseActions, *, train: bool = False,
+        obs_stage1: _model.Observation | None = None,
+        subtask_ce_loss_weight: float | None = None,
     ) -> at.Float[at.Array, "*b ah"]:
 
         # preprocess_rng, _, time_rng, coarse_action_noise_rng, _, expert_action_noise_rng = jax.random.split(rng, 6)
@@ -784,12 +924,19 @@ class ACOT_VLA(_model.BaseModel):
             action_diff_ref = u_ref_t - v_ref_t
             action_diff_expert = u_expert_t - v_expert_t
             # Since we set the balance factor as 0.5, the following loss is equal
-            return jnp.mean(jnp.square(action_diff_ref)) + jnp.mean(jnp.square(action_diff_expert))
+            action_loss = jnp.mean(jnp.square(action_diff_ref)) + jnp.mean(jnp.square(action_diff_expert))
 
         else:
             v_expert_t = self.action_out_proj(suffix_expert_out[:, -self.action_horizon :])
             action_diff_expert = u_expert_t - v_expert_t
-            return jnp.mean(jnp.square(action_diff_expert))
+            action_loss = jnp.mean(jnp.square(action_diff_expert))
+
+        if obs_stage1 is not None:
+            weight = self.subtask_ce_loss_weight if subtask_ce_loss_weight is None else subtask_ce_loss_weight
+            subtask_ce_loss = self._compute_subtask_ce_loss(preprocess_rng, obs_stage1, train=train)
+            return action_loss + weight * jnp.mean(subtask_ce_loss)
+
+        return action_loss
 
     @override
     def sample_actions(

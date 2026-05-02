@@ -157,6 +157,17 @@ class ModelTransformFactory(GroupFactory):
                 )
             case _model.ModelType.ACOT_VLA_PI05:
                 assert isinstance(model_config, acot_vla.ACOTConfig)
+                high_level_inputs = []
+                if model_config.enable_subtask_generation:
+                    high_level_inputs = [
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizeHighLowPrompt(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                            use_state_input=model_config.subtask_use_state_input,
+                        ),
+                        _transforms.ACOTPadStatesAndActions(model_config.action_dim),
+                    ]
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
@@ -167,6 +178,7 @@ class ModelTransformFactory(GroupFactory):
                         ),
                         _transforms.ACOTPadStatesAndActions(model_config.action_dim),
                     ],
+                    high_level_inputs=high_level_inputs,
                 )
             case _model.ModelType.PI0_FAST:
                 return _transforms.Group(

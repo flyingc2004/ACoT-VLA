@@ -193,7 +193,7 @@ class Embedder(nn.Module):
         )
 
     def encode(self, x):
-        x = self.input_embedding_table[(x,)]
+        x = jnp.take(self.input_embedding_table, x, axis=0)
         x *= jnp.sqrt(self.embed_dim).astype(x.dtype)
         return x
 
@@ -393,6 +393,7 @@ class Module(nn.Module):
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()  # Every float is dropped independently.
     adarms: bool = False
+    vocab_size: int = PALIGEMMA_VOCAB_SIZE
 
     def setup(self):
         # all experts must have the same depth
@@ -431,6 +432,10 @@ class Module(nn.Module):
     @at.typecheck
     def embed(self, tokens: at.Int[at.Array, "b t"]) -> at.Float[at.Array, "b t d"]:
         return self.embedder.encode(tokens).astype(self.embed_dtype)
+
+    @at.typecheck
+    def deembed(self, embeddings: at.Float[at.Array, "b t d"]) -> at.Float[at.Array, "b t v"]:
+        return self.embedder.decode(embeddings)
 
     @at.typecheck
     def __call__(

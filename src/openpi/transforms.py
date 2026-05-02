@@ -45,20 +45,34 @@ class Group:
     # Transforms that are applied to the model input data.
     inputs: Sequence[DataTransformFn] = ()
 
+    # Transforms that are applied to high-level stage-1 model input data.
+    high_level_inputs: Sequence[DataTransformFn] = ()
+
     # Transforms that are applied to the model output data.
     outputs: Sequence[DataTransformFn] = ()
 
-    def push(self, *, inputs: Sequence[DataTransformFn] = (), outputs: Sequence[DataTransformFn] = ()) -> "Group":
+    def push(
+        self,
+        *,
+        inputs: Sequence[DataTransformFn] = (),
+        high_level_inputs: Sequence[DataTransformFn] = (),
+        outputs: Sequence[DataTransformFn] = (),
+    ) -> "Group":
         """Append transforms to the group and return a new group.
 
         Args:
             inputs: Appended to the *end* of the current input transforms.
+            high_level_inputs: Appended to the *end* of the current high-level input transforms.
             outputs: Appended to the *beginning* of the current output transforms.
 
         Returns:
             A new group with the appended transforms.
         """
-        return Group(inputs=(*self.inputs, *inputs), outputs=(*outputs, *self.outputs))
+        return Group(
+            inputs=(*self.inputs, *inputs),
+            high_level_inputs=(*self.high_level_inputs, *high_level_inputs),
+            outputs=(*outputs, *self.outputs),
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -100,7 +114,11 @@ class RepackTransform(DataTransformFn):
 
     def __call__(self, data: DataDict) -> DataDict:
         flat_item = flatten_dict(data)
-        return jax.tree.map(lambda k: flat_item[k], self.structure)
+        result = jax.tree.map(lambda k: flat_item[k], self.structure)
+        flat_result = flatten_dict(result)
+        if "subtask" in flat_item and "subtask" not in flat_result:
+            result = {**result, "subtask": flat_item["subtask"]}
+        return result
 
 
 @dataclasses.dataclass(frozen=True)
@@ -316,6 +334,46 @@ class TokenizePrompt(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class TokenizeHighLowPrompt(DataTransformFn):
+    """Tokenize high-level task plus low-level subtask labels for stage-1 generation."""
+
+    tokenizer: _tokenizer.PaligemmaTokenizer
+    use_state_input: bool = False
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if (prompt := data.pop("prompt", None)) is None:
+            raise ValueError("Prompt is required")
+        if (subtask := data.pop("subtask", None)) is None:
+            raise ValueError("Subtask is required")
+
+        if self.use_state_input:
+            if (state := data.get("state", None)) is None:
+                raise ValueError("State is required when use_state_input=True.")
+        else:
+            state = None
+
+        if not isinstance(prompt, str):
+            prompt = prompt.item()
+        if not isinstance(subtask, str):
+            subtask = subtask.item()
+
+        if self.use_state_input:
+            tokens, token_mask, ar_mask, loss_mask = self.tokenizer.tokenize_high_low_prompt_with_state(
+                prompt, subtask, state
+            )
+        else:
+            tokens, token_mask, ar_mask, loss_mask = self.tokenizer.tokenize_high_low_prompt(prompt, subtask)
+
+        return {
+            **data,
+            "tokenized_prompt": tokens,
+            "tokenized_prompt_mask": token_mask,
+            "token_ar_mask": ar_mask,
+            "token_loss_mask": loss_mask,
+        }
+
+
+@dataclasses.dataclass(frozen=True)
 class TokenizeFASTInputs(DataTransformFn):
     tokenizer: _tokenizer.FASTTokenizer
 
@@ -399,7 +457,13 @@ class PromptFromHighlevelInstruction(DataTransformFn):
             instruction = segment['instruction']
         else:
             raise ValueError(f"No segment found for episode {episode_index} and frame {frame_index}")
-        return {**data, "prompt": instruction}
+
+        # Preserve an existing episode-level prompt when present. The segment instruction becomes the
+        # low-level subtask label for two-stage subtask generation.
+        result = {**data, "subtask": instruction}
+        if "prompt" not in result:
+            result["prompt"] = instruction
+        return result
 
 @dataclasses.dataclass(frozen=True)
 class PadStatesAndActions(DataTransformFn):

@@ -2,6 +2,7 @@ import logging
 import pathlib
 import numpy as np
 import sentencepiece
+import string
 from transformers import AutoProcessor
 
 import openpi.shared.download as download
@@ -42,6 +43,95 @@ class PaligemmaTokenizer:
             mask = [True] * self._max_len
 
         return np.asarray(tokens), np.asarray(mask)
+
+    def tokenize_high_low_prompt(
+        self, high_prompt: str, low_prompt: str
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        cleaned_high_text = high_prompt.lower().strip().replace("_", " ").replace("\n", " ")
+        cleaned_low_text = low_prompt.lower().strip().replace("_", " ").replace("\n", " ")
+
+        if cleaned_high_text and cleaned_high_text[-1] in string.punctuation:
+            cleaned_high_text = cleaned_high_text[:-1]
+        cleaned_high_text += "."
+        prefix = f"Task: {cleaned_high_text} Subtask: "
+        prefix_tokens = self._tokenizer.encode(prefix, add_bos=True)
+
+        if cleaned_low_text and cleaned_low_text[-1] in string.punctuation:
+            cleaned_low_text = cleaned_low_text[:-1]
+        cleaned_low_text += "."
+        suffix_tokens = self._tokenizer.encode(cleaned_low_text, add_eos=True)
+
+        return self._pad_high_low_tokens(prefix_tokens, suffix_tokens)
+
+    def tokenize_high_low_prompt_with_state(
+        self, high_prompt: str, low_prompt: str, state: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        cleaned_high_text = high_prompt.lower().strip().replace("_", " ").replace("\n", " ")
+        cleaned_low_text = low_prompt.lower().strip().replace("_", " ").replace("\n", " ")
+
+        if state is not None:
+            discretized_state = np.digitize(state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+            state_str = " ".join(map(str, discretized_state))
+        else:
+            state_str = ""
+
+        if cleaned_high_text and cleaned_high_text[-1] in string.punctuation:
+            cleaned_high_text = cleaned_high_text[:-1]
+        cleaned_high_text += "."
+        prefix = f"Task: {cleaned_high_text}, State: {state_str}; Subtask: "
+        prefix_tokens = self._tokenizer.encode(prefix, add_bos=True)
+
+        if cleaned_low_text and cleaned_low_text[-1] in string.punctuation:
+            cleaned_low_text = cleaned_low_text[:-1]
+        cleaned_low_text += "."
+        suffix_tokens = self._tokenizer.encode(cleaned_low_text, add_eos=True)
+
+        return self._pad_high_low_tokens(prefix_tokens, suffix_tokens)
+
+    def _pad_high_low_tokens(
+        self, prefix_tokens: list[int], suffix_tokens: list[int]
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        tokens = prefix_tokens + suffix_tokens
+        token_mask = [True] * len(tokens)
+        # Stage-1 generation is trained causally, but loss is only on the low-level suffix.
+        ar_mask = [1] * len(tokens)
+        loss_mask = [False] * len(prefix_tokens) + [True] * len(suffix_tokens)
+
+        tokens_len = len(tokens)
+        if tokens_len < self._max_len:
+            padding = [False] * (self._max_len - tokens_len)
+            tokens = tokens + padding
+            token_mask = token_mask + padding
+            ar_mask = ar_mask + padding
+            loss_mask = loss_mask + padding
+        else:
+            if tokens_len > self._max_len:
+                logging.warning(
+                    f"Token length ({tokens_len}) exceeds max length ({self._max_len}), truncating. "
+                    "Consider increasing the `max_token_len` in your model config if this happens frequently."
+                )
+            tokens = tokens[: self._max_len]
+            token_mask = token_mask[: self._max_len]
+            ar_mask = ar_mask[: self._max_len]
+            loss_mask = loss_mask[: self._max_len]
+
+        return (
+            np.asarray(tokens, dtype=np.int32),
+            np.asarray(token_mask, dtype=bool),
+            np.asarray(ar_mask, dtype=np.int32),
+            np.asarray(loss_mask, dtype=bool),
+        )
+
+    def detokenize(self, tokens: np.ndarray) -> str:
+        """Decode tokens back to text, stopping at EOS and ignoring padding."""
+        tokens = np.asarray(tokens, dtype=np.int32)
+        non_padding_tokens = tokens[tokens != 0]
+        eos_positions = np.where(non_padding_tokens == 1)[0]
+        if eos_positions.size:
+            non_padding_tokens = non_padding_tokens[: eos_positions[0]]
+        if non_padding_tokens.size == 0:
+            return ""
+        return self._tokenizer.decode(non_padding_tokens.tolist()).strip()
 
 
 class FASTTokenizer:
