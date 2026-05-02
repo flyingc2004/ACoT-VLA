@@ -146,14 +146,38 @@ class SortingPhaseClassifier:
 @dataclasses.dataclass
 class SortingContinuousPromptController:
     classifier: SortingPhaseClassifier
-    color_cycle: tuple[str, ...] = ("white", "red", "black", "yellow")
+    color_cycle: tuple[str, ...] = ("black", "red", "yellow")
     prompt_template: str = "Grab the <color> package on the table, turn the waist right to face the barcode scanner, place the package on the scanning table with the barcode facing up. Then, grab the package, rotate the waist and place the package in the blue bin. Finally, return the waist back to face the initial table"
     task_keywords: tuple[str, ...] = ("sorting_packages_continuous", "sort logistics parcels continuous")
+    white_stuck_timeout_steps: int = 30
+    forced_reset_anchor_color: str = "black"
+    forced_reset_detect_steps: int = 3
+    forced_reset_grace_steps: int = 20
+    forced_reset_grace_extra_steps: int = 2
+    forced_reset_streak_decay: int = 1
 
     _state: int = dataclasses.field(default=0, init=False)
     _color_index: int = dataclasses.field(default=0, init=False)
     current_prompt: str | None = dataclasses.field(default=None, init=False)
     is_initialized: bool = dataclasses.field(default=False, init=False)
+    _white_stuck_steps: int = dataclasses.field(default=0, init=False)
+    _already_reset_streak: int = dataclasses.field(default=0, init=False)
+    _forced_reset_grace_left: int = dataclasses.field(default=0, init=False)
+
+    def _anchor_color_index(self) -> int:
+        anchor = self.forced_reset_anchor_color.strip().lower()
+        if not anchor:
+            return 0
+        try:
+            return self.color_cycle.index(anchor)
+        except ValueError:
+            return 0
+
+    def _set_color_prompt_by_index(self, color_index: int) -> str:
+        self._color_index = color_index % len(self.color_cycle)
+        color = self.color_cycle[self._color_index]
+        self.current_prompt = self.prompt_template.replace("<color>", color)
+        return color
 
     @staticmethod
     def _default_model_path() -> str | None:
@@ -189,10 +213,10 @@ class SortingContinuousPromptController:
         device = os.getenv("SORTING_PHASE_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
         prompt_template = os.getenv("SORTING_CONTINUOUS_PROMPT_TEMPLATE", "Grab the <color> package on the table, turn the waist right to face the barcode scanner, place the package on the scanning table with the barcode facing up. Then, grab the package, rotate the waist and place the package in the blue bin. Finally, return the waist back to face the initial table")
 
-        raw_cycle = os.getenv("SORTING_COLOR_CYCLE", "black, yellow, red, white")
+        raw_cycle = os.getenv("SORTING_COLOR_CYCLE", "black, red, yellow")
         color_cycle = tuple([c.strip().lower() for c in raw_cycle.split(",") if c.strip()])
         if not color_cycle:
-            color_cycle = ("black", "yellow", "red", "white")
+            color_cycle = ("black", "red", "yellow")
 
         raw_keywords = os.getenv(
             "SORTING_CONTINUOUS_TASK_KEYWORDS",
@@ -200,11 +224,39 @@ class SortingContinuousPromptController:
         )
         task_keywords = tuple([k.strip().lower() for k in raw_keywords.split(",") if k.strip()])
 
+        white_stuck_timeout_steps = int(os.getenv("SORTING_WHITE_STUCK_TIMEOUT_STEPS", "30"))
+        if white_stuck_timeout_steps < 0:
+            white_stuck_timeout_steps = 0
+
+        forced_reset_anchor_color = os.getenv("SORTING_FORCED_RESET_ANCHOR_COLOR", "black").strip().lower()
+
+        forced_reset_detect_steps = int(os.getenv("SORTING_FORCED_RESET_DETECT_STEPS", "3"))
+        if forced_reset_detect_steps < 0:
+            forced_reset_detect_steps = 0
+
+        forced_reset_grace_steps = int(os.getenv("SORTING_FORCED_RESET_GRACE_STEPS", "20"))
+        if forced_reset_grace_steps < 0:
+            forced_reset_grace_steps = 0
+
+        forced_reset_grace_extra_steps = int(os.getenv("SORTING_FORCED_RESET_GRACE_EXTRA_STEPS", "2"))
+        if forced_reset_grace_extra_steps < 0:
+            forced_reset_grace_extra_steps = 0
+
+        forced_reset_streak_decay = int(os.getenv("SORTING_FORCED_RESET_STREAK_DECAY", "1"))
+        if forced_reset_streak_decay < 0:
+            forced_reset_streak_decay = 0
+
         classifier = SortingPhaseClassifier.from_checkpoint(model_path, device=device)
         LOGGER.info(
-            "Loaded sorting phase classifier from %s (interval=%s, colors=%s)",
+            "Loaded sorting phase classifier from %s (colors=%s, white_timeout_steps=%s, forced_reset_anchor=%s, forced_reset_detect_steps=%s, forced_reset_grace_steps=%s, forced_reset_grace_extra_steps=%s, forced_reset_streak_decay=%s)",
             model_path,
             color_cycle,
+            white_stuck_timeout_steps,
+            forced_reset_anchor_color,
+            forced_reset_detect_steps,
+            forced_reset_grace_steps,
+            forced_reset_grace_extra_steps,
+            forced_reset_streak_decay,
         )
 
         return cls(
@@ -212,6 +264,12 @@ class SortingContinuousPromptController:
             color_cycle=color_cycle,
             prompt_template=prompt_template,
             task_keywords=task_keywords,
+            white_stuck_timeout_steps=white_stuck_timeout_steps,
+            forced_reset_anchor_color=forced_reset_anchor_color,
+            forced_reset_detect_steps=forced_reset_detect_steps,
+            forced_reset_grace_steps=forced_reset_grace_steps,
+            forced_reset_grace_extra_steps=forced_reset_grace_extra_steps,
+            forced_reset_streak_decay=forced_reset_streak_decay,
         )
 
     def _is_continuous_task(self, task_name: str, prompt: str) -> bool:
@@ -239,7 +297,9 @@ class SortingContinuousPromptController:
 
         if not self._is_continuous_task(task_name, prompt):
             self._state = 0
-            self._frame_counter = 0
+            self._white_stuck_steps = 0
+            self._already_reset_streak = 0
+            self._forced_reset_grace_left = 0
             return None, None
         
         if not self.is_initialized:
@@ -253,17 +313,64 @@ class SortingContinuousPromptController:
 
         pred = self.classifier.predict(image)
 
+        if self._forced_reset_grace_left > 0:
+            self._forced_reset_grace_left -= 1
+
         if self._state == 0 and pred.label == "task_terminal":
             self._state = 1
+            self._white_stuck_steps = 0
+            self._already_reset_streak = 0
             print(f"Sorting phase prediction: label={pred.label} conf={pred.confidence:.4f}")
             LOGGER.info("Sorting prompt state transition: state0 -> state1 (terminal detected, conf=%.4f)", pred.confidence)
             return self.current_prompt, pred
 
+        if self._state == 0 and pred.label == "already_reset":
+            self._already_reset_streak += 1
+
+            anchor_index = self._anchor_color_index()
+            current_color = self.color_cycle[self._color_index].lower()
+            anchor_color = self.color_cycle[anchor_index]
+            required_streak = self.forced_reset_detect_steps
+            if self._forced_reset_grace_left > 0:
+                required_streak += self.forced_reset_grace_extra_steps
+            if (
+                self.forced_reset_detect_steps > 0
+                and current_color != anchor_color
+                and self._already_reset_streak >= required_streak
+            ):
+                self._state = 0
+                self._white_stuck_steps = 0
+                self._already_reset_streak = 0
+                self._forced_reset_grace_left = 0
+                reset_color = self._set_color_prompt_by_index(anchor_index)
+                LOGGER.warning(
+                    "Forced reset triggered by already_reset streak (required=%s), switching to anchor color=%s",
+                    required_streak,
+                    reset_color,
+                )
+                print("Forced reset triggered by already_reset prediction streak, switching to anchor color:", reset_color)
+                return self.current_prompt, pred
+        elif self._state == 0:
+            self._already_reset_streak = max(0, self._already_reset_streak - self.forced_reset_streak_decay)
+
+        if self._state == 0 and pred.label != "task_terminal":
+            current_color = self.color_cycle[self._color_index].lower()
+            if current_color == "white" and self.white_stuck_timeout_steps > 0:
+                self._white_stuck_steps += 1
+                if self._white_stuck_steps >= self.white_stuck_timeout_steps:
+                    self._white_stuck_steps = 0
+                    next_color = self._set_color_prompt_by_index(self._color_index + 1)
+                    print("white stuck timeout reached, switching to next color:", next_color)
+                    return self.current_prompt, pred
+            else:
+                self._white_stuck_steps = 0
+
         if self._state == 1 and pred.label == "already_reset":
             self._state = 0
-            self._color_index = (self._color_index + 1) % len(self.color_cycle)
-            color = self.color_cycle[self._color_index]
-            self.current_prompt = self.prompt_template.replace("<color>", color)
+            self._white_stuck_steps = 0
+            self._already_reset_streak = 0
+            self._forced_reset_grace_left = self.forced_reset_grace_steps
+            color = self._set_color_prompt_by_index(self._color_index + 1)
             print(f"Sorting phase prediction: label={pred.label} conf={pred.confidence:.4f}")
             LOGGER.info(
                 "Sorting prompt state transition: state1 -> state0 (reset detected, conf=%.4f), next color=%s",
