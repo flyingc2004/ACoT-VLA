@@ -236,11 +236,21 @@ def create_torch_dataset(
                 for dataset_meta in dataset_metas
                 for key in data_config.action_sequence_keys
             },
+            # Add this section to allow for dropped frames (e.g., N frames tolerance)
+            tolerances_s={
+                single_repo: 5 / dataset_meta.fps  # Replace N with the number of frames you want to allow
+                for single_repo, dataset_meta in zip(repo_id, dataset_metas)
+            }
         )
         if data_config.prompt_from_task:
             for n, d in enumerate(dataset._datasets):
+                segment_map = dataset_metas[n].info.get("instruction_segments", {})
                 dataset._datasets[n] = TransformedDataset(
-                    d, [_transforms.PromptFromLeRobotTask(dataset_metas[n].tasks)]
+                    d,
+                    [
+                        _transforms.PromptFromLeRobotTask(dataset_metas[n].tasks),
+                        _transforms.SegmentInstructionFromHighlevelInstruction(segment_map),
+                    ],
                 )
         if data_config.prompt_from_hl_instruction:
             for n, d in enumerate(dataset._datasets):
@@ -261,7 +271,15 @@ def create_torch_dataset(
         )
 
         if data_config.prompt_from_task:
-            dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+            dataset = TransformedDataset(
+                dataset,
+                [
+                    _transforms.PromptFromLeRobotTask(dataset_meta.tasks),
+                    _transforms.SegmentInstructionFromHighlevelInstruction(
+                        dataset_meta.info.get("instruction_segments", {})
+                    ),
+                ],
+            )
         if data_config.prompt_from_hl_instruction:
             dataset = TransformedDataset(dataset, [_transforms.PromptFromHighlevelInstruction(dataset_meta.info['instruction_segments'])])
 
@@ -297,10 +315,10 @@ def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip
         norm_stats = data_config.norm_stats
 
     stage2_transforms = [
-            *data_config.repack_transforms.inputs,
-            *data_config.data_transforms.inputs,
-            _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
-            *data_config.model_transforms.inputs,
+        *data_config.repack_transforms.inputs,
+        *data_config.data_transforms.inputs,
+        _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+        *data_config.model_transforms.inputs,
     ]
 
     if data_config.model_transforms.high_level_inputs:
@@ -418,7 +436,11 @@ def create_torch_data_loader(
     sampler = None
     if data_config.dataloader_sampler != '':
         from openpi.training.sampler import FrameSampler
-        sampler = FrameSampler(dataset, data_config.dataloader_sampler)
+        sampler = FrameSampler(
+            dataset,
+            data_config.dataloader_sampler,
+            reset_truncation_mode=data_config.subtask_reset_truncation_mode,
+        )
         shuffle = False
 
     dataset = SafeDataset(dataset)

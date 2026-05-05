@@ -400,7 +400,7 @@ class Module(nn.Module):
         assert all(config.depth == self.configs[0].depth for config in self.configs)
 
         self.embedder = Embedder(
-            vocab_size=PALIGEMMA_VOCAB_SIZE,
+            vocab_size=self.vocab_size,
             embed_dim=self.configs[0].width,  # embedder for first expert only
             name="embedder",
         )

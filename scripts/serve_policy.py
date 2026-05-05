@@ -2,11 +2,15 @@ import dataclasses
 import enum
 import logging
 import socket
+import os
+from datetime import datetime
 
 import tyro
 
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
+from openpi.policies.checkpoint_switcher import CheckpointRoutingSwitcher
+from openpi.policies.routing_policy import RoutingPolicy
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
@@ -57,6 +61,13 @@ class Args:
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
+    # If set, load multiple checkpoints from this JSON and route per request by task/prompt (see yrm/checkpoint_routing.example.json).
+    checkpoint_routing: str | None = None
+    # If true, load the default checkpoint once at startup (fail fast on bad paths).
+    routing_preload_default: bool = False
+    # If true, do not fall back to default when a non-default checkpoint fails to load.
+    routing_strict_load: bool = False
+
 
 # Default checkpoints that should be used for each environment.
 DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
@@ -86,7 +97,10 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
     ),
     EnvMode.G2SIM: Checkpoint(
         config="acot_icra_simulation_challenge_reasoning_to_action",
-        dir="./checkpoints/acot_icra_simulation_challenge_reasoning_to_action/exp_name/30000",
+        dir=os.getenv(
+            "G2SIM_CHECKPOINT",
+            "./checkpoints/acot_icra_simulation_challenge_reasoning_to_action/exp_name/30000",
+        ),
     )
 }
 
@@ -112,8 +126,20 @@ def create_policy(args: Args) -> _policy.Policy:
 
 
 def main(args: Args) -> None:
-    policy = create_policy(args)
-    policy_metadata = policy.metadata
+    if args.checkpoint_routing:
+        switcher = CheckpointRoutingSwitcher(
+            args.checkpoint_routing,
+            default_prompt=args.default_prompt,
+            strict_load=args.routing_strict_load,
+        )
+        policy = RoutingPolicy(
+            switcher,
+            preload_default=args.routing_preload_default,
+        )
+        policy_metadata = policy.metadata
+    else:
+        policy = create_policy(args)
+        policy_metadata = policy.metadata
 
     # Record the policy's behavior.
     if args.record:
@@ -133,5 +159,16 @@ def main(args: Args) -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, force=True)
+    log_dir = os.getenv("LOG_DIR")
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        time_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        logging.basicConfig(
+            level=logging.INFO,
+            filename=os.path.join(log_dir, f"{time_str}.log"),
+            format="%(asctime)s %(levelname)s %(message)s",
+            force=True,
+        )
+    else:
+        logging.basicConfig(level=logging.INFO, force=True)
     main(tyro.cli(Args))

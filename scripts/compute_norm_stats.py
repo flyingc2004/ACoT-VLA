@@ -6,6 +6,7 @@ to the config assets directory.
 """
 
 import numpy as np
+import pathlib
 import tqdm
 import tyro
 import random
@@ -14,7 +15,6 @@ import openpi.shared.normalize as normalize
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.transforms as transforms
-
 
 class RemoveStrings(transforms.DataTransformFn):
     def __call__(self, x: dict) -> dict:
@@ -103,6 +103,8 @@ def main(config_name: str, max_frames: int | None = None):
     stats = {key: normalize.RunningStats() for key in keys}
 
     sample_ratio = 0.1
+    if num_batches <= 0:
+        raise RuntimeError("No batches available while computing normalization stats.")
     max_batches = max(1, int(num_batches * sample_ratio))
 
     data_iter = iter(data_loader)
@@ -134,9 +136,15 @@ def main(config_name: str, max_frames: int | None = None):
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = "./"
-    print(f"Writing stats to: {output_path}")
-    normalize.save(output_path, norm_stats)
+    assets = getattr(config.data, "assets", None)
+    asset_id = None
+    if hasattr(config, "data") and hasattr(config.data, "assets"):
+        asset_id = getattr(config.data.assets, "asset_id", None)
+
+    assets_dir = pathlib.Path(getattr(assets, "assets_dir", None) or config.assets_dirs).expanduser()
+    output_dir = assets_dir if asset_id in (None, ".") else assets_dir / asset_id
+    print(f"Writing stats to: {output_dir}")
+    normalize.save(output_dir, norm_stats)
 
 if __name__ == "__main__":
     tyro.cli(main)

@@ -99,6 +99,12 @@ class DataConfig:
 
     dataloader_sampler: str | None = ''
 
+    # Controls reset-like interval truncation in subtask sampler.
+    # - "auto": disable truncation for datasets detected as continuous.
+    # - "always": always keep reset truncation enabled.
+    # - "never": never truncate reset-like intervals.
+    subtask_reset_truncation_mode: str = "auto"
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -145,6 +151,17 @@ class ModelTransformFactory(GroupFactory):
                 )
             case _model.ModelType.ACOT_VLA_PI0:
                 assert isinstance(model_config, acot_vla.ACOTConfig)
+                high_level_inputs = []
+                if model_config.enable_subtask_generation:
+                    high_level_inputs = [
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizeHighLowPrompt(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                            use_state_input=model_config.subtask_use_state_input,
+                        ),
+                        _transforms.ACOTPadStatesAndActions(model_config.action_dim),
+                    ]
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
@@ -154,6 +171,7 @@ class ModelTransformFactory(GroupFactory):
                         ),
                         _transforms.ACOTPadStatesAndActions(model_config.action_dim),
                     ],
+                    high_level_inputs=high_level_inputs,
                 )
             case _model.ModelType.ACOT_VLA_PI05:
                 assert isinstance(model_config, acot_vla.ACOTConfig)
@@ -1250,6 +1268,28 @@ class TrainConfig:
 
 
 # Use `get_config` if you need to get a config by name in your code.
+def _env_path(name: str, default: str) -> str:
+    return str(pathlib.Path(os.getenv(name, default)).expanduser())
+
+
+def _r2a_dataset_root() -> pathlib.Path:
+    return pathlib.Path(
+        os.getenv(
+            "R2A_DATASET_ROOT",
+            "./datasets/Reasoning2Action-Sim/dataset_without_depth",
+        )
+    ).expanduser()
+
+
+def _r2a_repo_ids(*names: str) -> list[str]:
+    root = _r2a_dataset_root()
+    return [str(root / name) for name in names]
+
+
+def _baseline_checkpoint_dir() -> pathlib.Path:
+    return pathlib.Path(os.getenv("ACOT_BASELINE_CHECKPOINT_DIR", "./checkpoints/baseline/30000")).expanduser()
+
+
 _CONFIGS = [
     #
     # Inference Aloha configs.
@@ -1827,24 +1867,37 @@ _CONFIGS = [
     # genie sim 3.0 baseline configs
     TrainConfig(
         name="acot_icra_simulation_challenge_reasoning_to_action",
+        checkpoint_base_dir=_env_path("ACOT_CHECKPOINT_BASE_DIR", "./checkpoints"),
         # For the ICRA sim challenge, we set both coarse and fine action horizons to 30 since the tasks are relatively long-horizon.
         # We also use both explicit and implicit action reasoners, and use the downsample-based implicit extractor.
         # You can modify these design choices based on the specific tasks and dataset. 
         model=acot_vla.ACOTConfig(coarse_action_horizon=30, action_horizon=30, paligemma_variant="gemma_2b_lora", adopt_explicit_action_reasoner=True, adopt_implicit_action_reasoner=True, downsample_based_implicit_extractor=True),
         data=LerobotACOTGo2DataConfig(
             default_prompt = "This is the icra simulation challenge baseline config. Please refer to the README for details.",
-            # Local challenge data paths (subset with complete data/meta/videos available).
-            repo_id = [
-                "/mnt/a/sharedata/agibot_challenge/data/Reasoning2Action-Sim/dataset_without_depth/pour_workpiece",
-                "/mnt/a/sharedata/agibot_challenge/data/Reasoning2Action-Sim/dataset_without_depth/open_door",
-                "/mnt/a/sharedata/agibot_challenge/data/Reasoning2Action-Sim/dataset_without_depth/hold_pot",
-                "/mnt/a/sharedata/agibot_challenge/data/Reasoning2Action-Sim/dataset_without_depth/take_wrong_item_shelf",
-                "/mnt/a/sharedata/agibot_challenge/data/Reasoning2Action-Sim/dataset_without_depth/sorting_packages_part_3",
-            ],
-            # Set the asset dir to specify normalization stats calculated from the dataset
+            # Fill in the 9 tasks for training. You can use all 9 tasks, or a subset of them based on your preference.
+            repo_id = _r2a_repo_ids(
+                "pour_workpiece", # Pouring workpieces, single-arm task, uses right hand only
+                "take_wrong_item_shelf",
+                "scoop_popcorn",
+                "scoop_popcorn_part_2",
+                "hold_pot",
+                "open_door",
+                "stock_and_straighten_shelf",
+                "stock_and_straighten_shelf_part_2",
+                "place_block_into_box",
+                "sorting_packages_part_1",
+                "sorting_packages_part_2",
+                "sorting_packages_part_3",
+                "clean_the_desktop_part_1",
+                "clean_the_desktop_part_2",
+                "clean_the_desktop_addition",
+            ),
+            # Set the asset dir to specify normalization stats calculated from the dataset.
+            # asset_id="." loads norm_stats.json from assets_dir itself (otherwise repo_id absolute paths
+            # would ignore assets_dir; see DataConfigFactory._load_norm_stats).
             assets=AssetsConfig(
-                assets_dir=None,
-                asset_id="icra_sim_local_5tasks",
+                assets_dir=os.getenv("BASELINE_NORM_ASSETS_DIR", str(_baseline_checkpoint_dir() / "assets")),
+                asset_id=".",
             ),
             # this line defines a mapping from task name to (prompt, probability of replacement) for training. 
             # If the current episode's task name matches one of the keys in the mapping, then with the corresponding probability, 
@@ -1852,35 +1905,31 @@ _CONFIGS = [
             # This allows for more diverse and potentially more informative prompts during training.
             prompt_map_inject_to_training = {
                 # task name: (prompt to replace vanilla annotation, probability to replace)
-                "Unload workpiece_icra_SIM": ("Pour the workpiece into the box", 0.5),
-                "Turn the doorknob": ("Turn the doorknob and push the door", 0.5),
-                "Make popcorn": ("Scoop the popcorn and pour it into the popcorn bucket", 0.5),
-                "Carry the pot": ("Grasp the two handles of the pot and place it on the stove", 0.5),
+                "Flip workpiece_icra_SIM": ("Pour the workpiece into the box", 1),
+                "Turn the doorknob": ("Turn the doorknob and push the door", 1),
+                "Pop the popcorn": ("Scoop the popcorn and pour it into the popcorn bucket", 1),
+                "Carry the pot": ("Grasp the two handles of the pot and place it on the stove", 1),
 
-                "Insert building block holes_2_SIM": (
-                    "Pick up the yellow circular block from the table, "
-                    "and place it into the round hole of the block box",
-                    0.2
+                "Insert the building block socket_2_SIM": (
+                    "Left arm pick up the yellow circular block from the table and place it into the round hole of the block box",
+                    1
                 ),
                 "Remove misplaced beverages from shelves": (
-                    "Pick up the incorrectly placed item from the shelf, "
-                    "and place it into the shopping basket",
-                    0.2
+                    "Right arm picks up the incorrectly placed item from the shelf and place it into the shopping basket",
+                    1
                 ),
-                "Stock supermarket shelves  \nStraighten products  \nAttend ICRA conference  \nOperate SIM card": (
-                    "Pick up the wei-chuan orange juice in the shopping basket, "
-                    "and place it on the shelf. "
-                    "Then, straighten the toppled wei-chuan grape juice",
-                    0.2
+                "Stock shelves\nStraighten objects\nIdentify ICRA (or Recognize ICRA, depending on context)\nAn object": (
+                    "Right arm pick up the wei-chuan orange juice in the shopping basket and place it on the shelf, Then, right arm straighten the toppled wei-chuan grape juice",
+                    1
                 ),
-                "Sort packages": (
-                    "Grab the <color> package on the table, "
-                    "turn the waist right to face the barcode scanner, "
-                    "place the package on the scanning table with the barcode facing up. "
-                    "Then, grab the package, "
-                    "rotate the waist and place the package in the blue bin. "
-                    "Finally, return the waist back to face the initial table",
-                    0.2
+                "Stock shelves_Straighten_ICRA_An object": (
+                    "Right arm pick up the wei-chuan orange juice in the shopping basket and place it on the shelf, Then, right arm straighten the toppled wei-chuan grape juice",
+                    1
+                ),
+
+                "Sort logistics parcels": (
+                    "Grab the <color> package on the table, turn the waist right to face the barcode scanner, place the package on the scanning table with the barcode facing up. Then, grab the package, rotate the waist and place the package in the blue bin. Finally, return the waist back to face the initial table",
+                    1
                 ),
 
                 "Clear the desktop": (
@@ -1889,7 +1938,7 @@ _CONFIGS = [
                     "pick up the tissue on the table and place it into the trash bin on the right size. "
                     "Then, pick up the mouse and place it on the right side of the laptop. "
                     "Finally, straighten the colored pencil box",
-                    0.5
+                    1
                 ),
             },
             repack_transforms =_transforms.Group(
@@ -1904,6 +1953,7 @@ _CONFIGS = [
                             "state": "observation.state",
                             "actions": "action",
                             "prompt": "prompt",
+                            "segment_instruction": "segment_instruction",
                             # repack task name and episode id here for specific prompt replacement in training
                             "task": "task",
                             "episode_index": "episode_index"
@@ -1912,7 +1962,7 @@ _CONFIGS = [
                 ]
             ),
             # this line allows using episode level annotation for training, essential for instruction following
-            base_config = DataConfig(dataloader_sampler = "subtask", prompt_from_hl_instruction = True),
+            base_config = DataConfig(dataloader_sampler = "subtask", prompt_from_task=True),
             # this line is important for action cot training, it shifts the action sequence by a certain number of steps 
             # to create the input for the coarse action reasoner and the final action head. 
             # You can tune these values based on the characteristics of your dataset. 
@@ -1924,19 +1974,20 @@ _CONFIGS = [
             delta_action_mask = _transforms.make_bool_mask(14, -18)
         ),
         lr_schedule = _optimizer.CosineDecaySchedule(
-            warmup_steps = 10_000,
+            warmup_steps = 0,
             peak_lr = 5e-5,
             decay_steps = 1_000_000,
             decay_lr = 5e-5,
         ),
         optimizer = _optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay = 0.999,
-        # Use no-op loader locally when external pretrained checkpoint path is unavailable.
-        weight_loader = weight_loaders.NoOpWeightLoader(),
+        weight_loader = weight_loaders.ACOTCheckpointWeightLoader(
+            os.getenv("BASELINE_PARAMS", str(_baseline_checkpoint_dir() / "params"))
+        ),
         num_train_steps = 50_000,
-        save_interval = 5000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
-        num_workers = 24 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
-        batch_size = 256 if not os.getenv("DEBUG_MODE", default=False) == "true" else 16,
+        save_interval = 10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
+        num_workers = 32 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
+        batch_size = 64 if not os.getenv("DEBUG_MODE", default=False) == "true" else 16,
         # You can select to freeze certain parts of the model during training by setting the corresponding flags to True
         freeze_filter = acot_vla.ACOTConfig(paligemma_variant="gemma_2b_lora").get_freeze_filter(
             freeze_vision = False, freeze_llm = True, freeze_llm_embedder=True, freeze_dual_ae=[False, False]

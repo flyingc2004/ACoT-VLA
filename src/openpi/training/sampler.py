@@ -1,15 +1,50 @@
-
 import torch
-import random
-from tqdm import tqdm
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+try:
+    import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+except ModuleNotFoundError:
+    import lerobot.datasets.lerobot_dataset as lerobot_dataset
+
+
+RESET_KEYWORDS = ("reset", "return", "default")
+CONTINUOUS_KEYWORDS = ("packages", "sort")
+RESET_TRUNCATE_THRESHOLD = 90
+RESET_TRUNCATE_TO = 45
+RESET_TRUNCATION_MODES = ("auto", "always", "never")
 
 def get_base_dataset(ds):
     if hasattr(ds, "_dataset"):
         return get_base_dataset(ds._dataset)
     return ds
 
-def sample_subtask(dataset):
+
+def _iter_string_values(obj):
+    if obj is None:
+        return
+    if isinstance(obj, str):
+        yield obj
+        return
+    if isinstance(obj, dict):
+        for value in obj.values():
+            yield from _iter_string_values(value)
+        return
+    if isinstance(obj, (list, tuple, set)):
+        for value in obj:
+            yield from _iter_string_values(value)
+
+
+def _has_continuous_sorting_text(obj) -> bool:
+    return any(any(keyword in text.lower() for keyword in CONTINUOUS_KEYWORDS) for text in _iter_string_values(obj))
+
+
+def _should_truncate_reset(reset_truncation_mode: str, *, is_continuous_dataset: bool) -> bool:
+    if reset_truncation_mode == "never":
+        return False
+    if reset_truncation_mode == "always":
+        return True
+    return not is_continuous_dataset
+
+
+def sample_subtask(dataset, *, reset_truncation_mode="auto"):
     valid_intervals = []
     base_ds = get_base_dataset(dataset)
     
@@ -28,14 +63,13 @@ def sample_subtask(dataset):
 
     for sub_ds in sub_datasets:
         inner_ds = get_base_dataset(sub_ds)
-        
         instruction_segment = inner_ds.meta.info.get('instruction_segments', {})
+        is_continuous_dataset = _has_continuous_sorting_text(instruction_segment)
         episode_data_index = inner_ds.episode_data_index
         num_episodes = len(episode_data_index['from'])
         
         for ep_idx in range(num_episodes):
             local_episode_start = episode_data_index['from'][ep_idx].item()
-            
             if str(ep_idx) not in instruction_segment:
                 continue
 
@@ -45,11 +79,14 @@ def sample_subtask(dataset):
                 local_end = subtask["success_frame_index"] + local_episode_start
                 
                 instruction = subtask["instruction"].lower()
-                is_reset = any(k in instruction for k in ['reset', 'return', 'default'])
+                is_reset = any(k in instruction for k in RESET_KEYWORDS)
                 
-                if is_reset:
-                    if local_end - local_start > 90:
-                        local_end = local_start + 45
+                if is_reset and _should_truncate_reset(
+                    reset_truncation_mode,
+                    is_continuous_dataset=is_continuous_dataset,
+                ):
+                    if local_end - local_start > RESET_TRUNCATE_THRESHOLD:
+                        local_end = local_start + RESET_TRUNCATE_TO
                 
                 global_start = local_start + current_global_offset
                 global_end = local_end + current_global_offset
@@ -67,7 +104,13 @@ class FrameSampler(torch.utils.data.Sampler):
     """
     Custom sampler that only samples data indices falling within specified intervals
     """
-    def __init__(self, dataset, sampler_type):
+    def __init__(self, dataset, sampler_type, *, reset_truncation_mode="auto"):
+        if reset_truncation_mode not in RESET_TRUNCATION_MODES:
+            raise ValueError(
+                f"Invalid reset truncation mode: {reset_truncation_mode}. "
+                f"Expected one of {RESET_TRUNCATION_MODES}."
+            )
+        self.reset_truncation_mode = reset_truncation_mode
         valid_intervals = self.parse_dataset(dataset, sampler_type)
         self.sample_frames(valid_intervals, len(dataset))
 
@@ -77,7 +120,7 @@ class FrameSampler(torch.utils.data.Sampler):
             intervals: List of (start_index, end_index) tuples
         """
         if sampler_type == 'subtask':
-            return sample_subtask(dataset)
+            return sample_subtask(dataset, reset_truncation_mode=self.reset_truncation_mode)
         else:
             raise ValueError(f"Invalid sampler type: {sampler_type}")
 

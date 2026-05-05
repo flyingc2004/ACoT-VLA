@@ -3,6 +3,16 @@ assets/
 checkpoints/
 data/
 wandb/
+sorting_phase_dataset/
+top_head.png
+
+# Generated outputs are ignored by default. The sorting phase controller depends
+# on its classifier checkpoints, so those specific assets may be tracked.
+outputs/**
+!outputs/sorting_phase_classifier/
+!outputs/sorting_phase_classifier/sorting_phase_classifier_best.pt
+!outputs/sorting_phase_classifier_retrain_*/
+!outputs/sorting_phase_classifier_retrain_*/sorting_phase_classifier_best.pt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -170,6 +180,7 @@ cython_debug/
 logs/
 *exps*
 .vscode/
+
 # Local clones
 /openpi/
 /openpi_subtask_generation/

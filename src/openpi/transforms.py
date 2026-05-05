@@ -430,6 +430,40 @@ class PromptFromLeRobotTask(DataTransformFn):
 
         return {**data, "prompt": prompt}
 
+
+def _find_segment_instruction(
+    instruction_segments: dict,
+    episode_index: int,
+    frame_index: int,
+) -> str | None:
+    segments = instruction_segments.get(str(episode_index))
+    if not segments:
+        return None
+
+    segment_id = len(segments) - 1
+    for i, segment in enumerate(segments):
+        start = int(segment.get("start_frame_index", 0))
+        if i == 0:
+            start = 0
+        end = int(segment.get("end_frame_index", segment.get("success_frame_index", start)))
+        if frame_index >= start and frame_index < end:
+            segment_id = i
+            break
+
+    return str(segments[segment_id].get("instruction", ""))
+
+
+def _join_episode_instructions(
+    instruction_segments: dict,
+    episode_index: int,
+) -> str:
+    segments = instruction_segments.get(str(episode_index))
+    if not segments:
+        return ""
+    instructions = [str(segment.get("instruction", "")).strip() for segment in segments]
+    instructions = [text for text in instructions if text]
+    return " ".join(instructions)
+
 @dataclasses.dataclass(frozen=True)
 class PromptFromHighlevelInstruction(DataTransformFn):
     """Extracts a prompt from the current LeRobot dataset task."""
@@ -443,27 +477,35 @@ class PromptFromHighlevelInstruction(DataTransformFn):
 
         episode_index = int(data["episode_index"])
         frame_index = int(data["frame_index"])
-        segments = self.instruction_segments.get(str(episode_index))
-
-        segment_id = len(segments) - 1
-        segments[0]['start_frame_index'] = 0
-        for i, segment in enumerate(segments):
-            if frame_index >= segment['start_frame_index'] and frame_index < segment['end_frame_index']:
-                segment_id = i
-                break
-        
-        if segment_id is not None:
-            segment = segments[segment_id]
-            instruction = segment['instruction']
-        else:
+        instruction = _find_segment_instruction(self.instruction_segments, episode_index, frame_index)
+        if instruction is None:
             raise ValueError(f"No segment found for episode {episode_index} and frame {frame_index}")
-
-        # Preserve an existing episode-level prompt when present. The segment instruction becomes the
-        # low-level subtask label for two-stage subtask generation.
         result = {**data, "subtask": instruction}
         if "prompt" not in result:
             result["prompt"] = instruction
         return result
+
+
+@dataclasses.dataclass(frozen=True)
+class SegmentInstructionFromHighlevelInstruction(DataTransformFn):
+    """Extracts segment instruction text without overriding the prompt field."""
+
+    instruction_segments: dict
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "episode_index" not in data:
+            return {**data, "segment_instruction": "", "segment_instructions": ""}
+
+        episode_index = int(data["episode_index"])
+        frame_index = int(data.get("frame_index", 0))
+        segment_instruction = _find_segment_instruction(self.instruction_segments, episode_index, frame_index) or ""
+        # Keep an episode-level instruction view for downstream parsing (e.g., color extraction).
+        episode_instructions = _join_episode_instructions(self.instruction_segments, episode_index)
+        return {
+            **data,
+            "segment_instruction": segment_instruction,
+            "segment_instructions": episode_instructions,
+        }
 
 @dataclasses.dataclass(frozen=True)
 class PadStatesAndActions(DataTransformFn):

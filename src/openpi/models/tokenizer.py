@@ -93,7 +93,6 @@ class PaligemmaTokenizer:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         tokens = prefix_tokens + suffix_tokens
         token_mask = [True] * len(tokens)
-        # Stage-1 generation is trained causally, but loss is only on the low-level suffix.
         ar_mask = [1] * len(tokens)
         loss_mask = [False] * len(prefix_tokens) + [True] * len(suffix_tokens)
 

@@ -350,8 +350,34 @@ git switch -c integrate/challenge-on-subtask
 
 - 当前 `subtask` 分支已经实现的 stage-1 subtask semantic output。
 - `challenge` 分支为了推理仿真环境引入的多任务、checkpoint routing、sorting continuous、训练数据构建和权重加载修复。
+- `src/openpi/policies/sorting_phase_state_machine.py` 这条推理时 prompt 转换链路必须保留。它会读取 `outputs/` 下的 sorting phase 分类器 checkpoint，根据 `top_head` 图像判断 sorting 连续任务阶段，并在推理过程中切换 prompt。
 
 如果二者冲突，优先保留 `subtask` 的语义输出链路，再把 `challenge` 的功能以局部 patch 接进去。
+
+### Mandatory Sorting Prompt State Machine
+
+这条链路不是可选实验代码，合并时必须完整保留：
+
+- 文件：`src/openpi/policies/sorting_phase_state_machine.py`
+- 入口：`SortingContinuousPromptController.from_env()`
+- policy 接入点：`Policy.__init__()` 初始化 controller，`Policy.infer()` 在 tokenize / subtask decode / action sample 之前调用 controller 更新 `inputs["prompt"]`。
+- 输入图像：`obs["images"]["top_head"]`
+- 默认模型搜索路径：
+  - `outputs/sorting_phase_classifier_retrain_*/sorting_phase_classifier_best.pt`
+  - `outputs/sorting_phase_classifier/sorting_phase_classifier_best.pt`
+- 可覆盖环境变量：
+  - `SORTING_PHASE_MODEL_PATH`
+  - `SORTING_PHASE_DEVICE`
+  - `SORTING_CONTINUOUS_PROMPT_TEMPLATE`
+  - `SORTING_COLOR_CYCLE`
+  - `SORTING_CONTINUOUS_TASK_KEYWORDS`
+
+语义要求：
+
+- 对 `sorting_packages_continuous` / sorting prompt，状态机根据分类器输出 `already_reset`、`in_progress`、`task_terminal` 切换包裹颜色 prompt。
+- controller 更新后的 prompt 必须同时进入 stage-1 subtask generation 和 stage-2 action sampling。
+- 如果合并时调整模型资产位置，必须保留 `SORTING_PHASE_MODEL_PATH` 覆盖能力，并在默认路径或文档中说明新位置。
+- 不允许在 cleanup 中删除这条链路依赖的 classifier checkpoint，除非同时提供等价的下载、路径配置或资产迁移方案。
 
 ### Do Not Take From Challenge As-Is
 
@@ -361,7 +387,7 @@ git switch -c integrate/challenge-on-subtask
 - 删除或替换 `lerobot/`、`third_party/libero` 的整棵目录。
 - 新增 `.gitmodules` 并把 `third_party/aloha`、`third_party/libero` 改成 submodule，除非明确决定重构依赖管理。
 - 把 `pyproject.toml` 的 `lerobot = { path = "lerobot" }` 改成远端 git dependency，除非本仓库不再 vendor `lerobot/`。
-- 提交 `outputs/sorting_phase_classifier*.pt`、`training_curves.png`、`training_metrics.json` 等训练产物。
+- 把 `outputs/` 当作普通训练产物整目录清理。`sorting_phase_classifier*/sorting_phase_classifier_best.pt` 是 sorting prompt 状态机的运行依赖；`training_curves.png`、`training_metrics.json` 等可不入库，但 checkpoint 必须保留或有明确替代资产路径。
 - 提交调试图片 `top_head.png`。
 - 直接采用硬编码绝对路径，例如 `/home/xhz/...`、`/mnt/sdc/...`、`/data/...`，必须改成 env var 或文档化默认值。
 - 直接采用 `scripts/train.sh` 的本机 GPU / wandb 设置。
@@ -412,6 +438,8 @@ sorting_phase_dataset/
 - `src/openpi/policies/checkpoint_switcher.py`
 - `src/openpi/policies/routing_policy.py`
 - `src/openpi/policies/sorting_phase_state_machine.py`
+- `outputs/sorting_phase_classifier/sorting_phase_classifier_best.pt`
+- `outputs/sorting_phase_classifier_retrain_*/sorting_phase_classifier_best.pt`
 - `scripts/build_data.sh`
 - `scripts/build_sorting_phase_dataset.py`
 - `scripts/make_sorting_continuous_dataset.py`
@@ -486,6 +514,7 @@ git restore --source=origin/challenge -- \
 - `challenge` 每次 inference 都保存 `top_head.png`，这只适合 debug。默认不要启用；若需要，放到 env flag 之后。
 - prompt mapping 发生在 stage-1 subtask decode 之前，否则 subtask generation 看到的还是旧 prompt。
 - sorting controller 修改后的 prompt 也必须同时进入 high-level subtask transform 和 action transform。
+- `SortingContinuousPromptController.from_env()` 找不到 checkpoint 时可以让普通任务继续启动，但 sorting continuous 实验必须显式确认模型已加载；不要把 silent fallback 当成该链路已验证。
 
 推荐顺序：
 
@@ -638,6 +667,7 @@ python -m compileall src scripts
 
 - checkpoint routing policy files
 - sorting phase state machine
+- sorting phase classifier checkpoint assets required by the state machine
 - dataset building / classifier scripts
 - example routing JSON
 
@@ -728,7 +758,7 @@ feat(config): add challenge simulation training preset
 
 清理：
 
-- 不提交 outputs/checkpoints。
+- 不提交无关 outputs/checkpoints。sorting prompt 状态机依赖的 `outputs/sorting_phase_classifier*/sorting_phase_classifier_best.pt` 必须保留，或迁移到有文档说明的等价资产位置。
 - 不提交 top_head.png。
 - 不提交个人绝对路径。
 - 不改依赖结构，除非专门做依赖迁移 PR。
@@ -759,7 +789,7 @@ git diff --name-status subtask...HEAD
 D agents.md
 D lerobot/...
 D third_party/libero/...
-A outputs/...
+D outputs/sorting_phase_classifier*/sorting_phase_classifier_best.pt
 A top_head.png
 ```
 
@@ -781,8 +811,10 @@ A top_head.png
 
 - `scripts/serve_policy.py --checkpoint_routing yrm/checkpoint_routing.example.json` 能解析参数。
 - `RoutingPolicy.infer()` 会把 obs 路由到底层 policy。
-- sorting continuous controller 在没有 classifier checkpoint 时不会让普通 policy 启动失败。
+- `SortingContinuousPromptController.from_env()` 能找到并加载 `outputs/sorting_phase_classifier*/sorting_phase_classifier_best.pt`，或能通过 `SORTING_PHASE_MODEL_PATH` 指向等价 checkpoint。
+- sorting continuous controller 在没有 classifier checkpoint 时不会让普通 policy 启动失败；但 sorting continuous 实验必须把缺失 checkpoint 视为未通过验证。
 - task prompt mapping 在 action sampling 和 subtask generation 前生效。
+- 对 sorting continuous 任务，controller 更新后的 prompt 同时进入 subtask generation 和 action sampling。
 - `sample_actions(..., noise=...)` shape 正确时报通，shape 错误时报清晰错误。
 
 #### Training Checks

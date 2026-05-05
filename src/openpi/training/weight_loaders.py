@@ -13,6 +13,17 @@ import openpi.shared.download as download
 logger = logging.getLogger(__name__)
 
 
+def _normalize_flat_key_tuple(key: tuple) -> tuple:
+    """Align checkpoint string indices (e.g. '0') with NNX tuple keys (int 0)."""
+    out = []
+    for x in key:
+        if isinstance(x, str) and x.isdigit():
+            out.append(int(x))
+        else:
+            out.append(x)
+    return tuple(out)
+
+
 @runtime_checkable
 class WeightLoader(Protocol):
     def load(self, params: at.Params) -> at.Params:
@@ -118,6 +129,9 @@ def _align_param(expected, loaded, init_method):
     return new_param
 
 def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex: str, init="random") -> at.Params:
+    # Orbax checkpoints often use string dict keys ('0','1'); NNX uses int indices. Inference fixes this via
+    # openpi.models.model.convert_str_keys_to_int in BaseModelConfig.load; training must do the same before merge.
+    loaded_params = _model.convert_str_keys_to_int(loaded_params)
 
     flat_ref = flax.traverse_util.flatten_dict(params, sep=None)
     flat_loaded = flax.traverse_util.flatten_dict(loaded_params, sep=None)
@@ -140,8 +154,9 @@ def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex:
         k_source = tuple(cloned_path_source.split('/'))
 
         if cloned_path_source != key_path:
-            if k_source in flat_loaded:
-                loaded_param_source = flat_loaded[k_source]
+            k_source_lookup = _normalize_flat_key_tuple(k_source)
+            if k_source_lookup in flat_loaded:
+                loaded_param_source = flat_loaded[k_source_lookup]
 
                 if expected_param.shape == loaded_param_source.shape:
                     result[k] = loaded_param_source.astype(expected_param.dtype)
