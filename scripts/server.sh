@@ -1,12 +1,26 @@
-cart_num=${1}
-port=${2}
+#!/usr/bin/env bash
+set -euo pipefail
 
-export TF_NUM_INTRAOP_THREADS=16
-export CUDA_VISIBLE_DEVICES=${cart_num}
-export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+cart_num="${1:-${CUDA_VISIBLE_DEVICES:-0}}"
+port="${2:-${PORT:-8999}}"
+
+if [[ -n "${CHECKPOINT_ROUTING_JSON:-}" ]]; then
+  routing_json="${CHECKPOINT_ROUTING_JSON}"
+elif [[ -f "yrm/ckpt_routing.json" ]]; then
+  routing_json="yrm/ckpt_routing.json"
+else
+  routing_json="yrm/checkpoint_routing.example.json"
+fi
+
+export TF_NUM_INTRAOP_THREADS="${TF_NUM_INTRAOP_THREADS:-16}"
+export CUDA_VISIBLE_DEVICES="${cart_num}"
+export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.9}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 export XLA_FLAGS="--xla_gpu_autotune_level=0"
 
 export PYTHONPATH=/root/openpi/src:${PYTHONPATH:-/app:/app/src}
-GIT_LFS_SKIP_SMUDGE=1 uv run python scripts/serve_policy.py --env G2SIM --port ${port}
+GIT_LFS_SKIP_SMUDGE=1 uv run python scripts/serve_policy.py \
+  --env G2SIM \
+  --port "${port}" \
+  --checkpoint-routing "${routing_json}"

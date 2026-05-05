@@ -13,4 +13,7 @@ export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 export XLA_FLAGS="--xla_gpu_autotune_level=0"
 
-GIT_LFS_SKIP_SMUDGE=1 uv run python scripts/serve_policy.py --env G2SIM --port "${port}" --checkpoint_routing "${routing_json}"
+GIT_LFS_SKIP_SMUDGE=1 uv run python scripts/serve_policy.py \
+  --env G2SIM \
+  --port "${port}" \
+  --checkpoint-routing "${routing_json}"
