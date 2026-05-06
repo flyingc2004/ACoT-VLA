@@ -56,11 +56,90 @@ class Policy(BasePolicy):
             if self._sample_low_level_task is not None
             else None
         )
+        logging.info(
+            "ACOT-VLA subtask generation %s (high_level_transforms=%d, max_steps=%d, temperature=%.3f)",
+            "enabled" if self._sample_low_level_task is not None else "disabled",
+            len(high_level_transforms),
+            self._subtask_max_decoding_steps,
+            self._subtask_temperature,
+        )
         self._sorting_prompt_controller: SortingContinuousPromptController | None = None
         try:
             self._sorting_prompt_controller = SortingContinuousPromptController.from_env()
         except Exception:  # pylint: disable=broad-exception-caught
             logging.warning("Failed to initialize sorting prompt controller:\n%s", traceback.format_exc())
+
+    def _predict_subtask(
+        self,
+        inputs: dict,
+        subtask_rng: at.KeyArrayLike,
+    ) -> tuple[np.ndarray | None, list[str] | None]:
+        if self._sample_low_level_task is None:
+            return None, None
+
+        # Match the reference openpi stage-1 path: build a separate high-level
+        # observation, mask placeholder low-level tokens, then decode.
+        high_level_inputs = jax.tree.map(lambda x: x, inputs)
+        high_level_inputs["subtask"] = np.asarray("ABCDEFG")
+        high_level_inputs = self._high_level_input_transform(high_level_inputs)
+        high_level_inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], high_level_inputs)
+
+        observation = _model.Observation.from_dict(high_level_inputs)
+        observation = _model.preprocess_observation(
+            subtask_rng,
+            observation,
+            train=False,
+            image_keys=list(observation.images.keys()),
+        )
+
+        loss_mask = jnp.asarray(observation.token_loss_mask)
+        tokenized_prompt = observation.tokenized_prompt.at[loss_mask].set(0)
+        tokenized_prompt_mask = observation.tokenized_prompt_mask.at[loss_mask].set(False)
+        new_observation = _model.Observation(
+            images=observation.images,
+            image_masks=observation.image_masks,
+            state=observation.state,
+            tokenized_prompt=tokenized_prompt,
+            tokenized_prompt_mask=tokenized_prompt_mask,
+            token_ar_mask=observation.token_ar_mask,
+            token_loss_mask=observation.token_loss_mask,
+        )
+        new_observation = _model.preprocess_observation(
+            None,
+            new_observation,
+            train=False,
+            image_keys=list(new_observation.images.keys()),
+        )
+
+        subtask_tokens, _, _, _ = self._sample_low_level_task(
+            subtask_rng,
+            new_observation,
+            self._subtask_max_decoding_steps,
+            1,
+            self._subtask_temperature,
+        )
+        predicted_token_np = np.asarray(subtask_tokens)
+        assert self._subtask_detokenizer is not None
+        predicted_texts = [
+            self._subtask_detokenizer.detokenize(np.asarray(tokens, dtype=np.int32))
+            for tokens in predicted_token_np
+        ]
+        eos_present = np.any(predicted_token_np == 1, axis=1)
+        logging.info("[HighLevel] predicted_text=%s", predicted_texts)
+        print(f"[HighLevel] predicted_text={predicted_texts}", flush=True)
+        if not np.all(eos_present):
+            logging.warning(
+                "[HighLevel] subtask decode reached max_decoding_steps without EOS: eos_present=%s",
+                eos_present.tolist(),
+            )
+            print(
+                "[HighLevel] warning=no_eos "
+                f"eos_present={eos_present.tolist()} max_decoding_steps={self._subtask_max_decoding_steps}",
+                flush=True,
+            )
+        if os.getenv("ACOT_PRINT_SUBTASK_TOKENS", "").lower() in {"1", "true", "yes"}:
+            print(f"[HighLevel] predicted_tokens={predicted_token_np[0].astype(np.int32).tolist()}", flush=True)
+        return predicted_token_np, predicted_texts
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
@@ -146,37 +225,7 @@ class Policy(BasePolicy):
         self._rng, sample_rng = jax.random.split(self._rng)
         if self._sample_low_level_task is not None:
             sample_rng, subtask_rng = jax.random.split(sample_rng)
-            subtask_inputs = jax.tree.map(lambda x: x, inputs)
-            # Placeholder label is masked out before decoding; it only builds the high/low token layout.
-            subtask_inputs["subtask"] = np.asarray("placeholder subtask")
-            subtask_inputs = self._high_level_input_transform(subtask_inputs)
-            subtask_inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], subtask_inputs)
-            subtask_observation = _model.Observation.from_dict(subtask_inputs)
-
-            loss_mask = jnp.asarray(subtask_observation.token_loss_mask)
-            tokenized_prompt = subtask_observation.tokenized_prompt.at[loss_mask].set(0)
-            tokenized_prompt_mask = subtask_observation.tokenized_prompt_mask.at[loss_mask].set(False)
-            subtask_observation = _model.Observation(
-                images=subtask_observation.images,
-                image_masks=subtask_observation.image_masks,
-                state=subtask_observation.state,
-                tokenized_prompt=tokenized_prompt,
-                tokenized_prompt_mask=tokenized_prompt_mask,
-                token_ar_mask=subtask_observation.token_ar_mask,
-                token_loss_mask=subtask_observation.token_loss_mask,
-            )
-            subtask_tokens, _, _, _ = self._sample_low_level_task(
-                subtask_rng,
-                subtask_observation,
-                self._subtask_max_decoding_steps,
-                1,
-                self._subtask_temperature,
-            )
-            subtask_tokens = np.asarray(subtask_tokens)
-            subtask_texts = [
-                self._subtask_detokenizer.detokenize(np.asarray(tokens, dtype=np.int32))
-                for tokens in subtask_tokens
-            ]
+            subtask_tokens, subtask_texts = self._predict_subtask(inputs, subtask_rng)
         else:
             subtask_tokens = None
             subtask_texts = None

@@ -190,29 +190,36 @@ def train_step(
     }
     return new_state, info
 
-@at.typecheck
 def acot_train_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
-    batch: tuple[_model.Observation, _model.Actions, _model.CoarseActions],
+    batch,
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
-
-    @at.typecheck
-    def loss_fn(
-        model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions,
-        coarse_actions: _model.CoarseActions
-    ):
-        return model.compute_loss(rng, observation, actions, coarse_actions, train=True)
 
     train_rng = jax.random.fold_in(rng, state.step)
     observation, actions, coarse_actions = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions, coarse_actions)
+    if isinstance(observation, tuple):
+        obs_stage1, obs_stage2 = observation
+
+        def loss_fn(model, rng, obs2, obs1, actions, coarse_actions):
+            return model.compute_loss(rng, obs2, actions, coarse_actions, train=True, obs_stage1=obs1)
+
+        loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(
+            model, train_rng, obs_stage2, obs_stage1, actions, coarse_actions
+        )
+    else:
+        def loss_fn(model, rng, observation, actions, coarse_actions):
+            return model.compute_loss(rng, observation, actions, coarse_actions, train=True)
+
+        loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(
+            model, train_rng, observation, actions, coarse_actions
+        )
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)

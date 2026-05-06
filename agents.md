@@ -164,6 +164,8 @@ model.compute_loss(rng, obs_stage2, actions, train=True, obs_stage1=obs_stage1)
 - 如果传入 `obs_stage1`，再计算 subtask CE loss。
 - 返回 `mean(diffusion_loss) + ce_loss_weight * ce_loss`。
 
+注意：上面的 training 改动只用于“继续 finetune/训练时把 subtask CE loss 纳入优化”。它不是推理侧生成 subtask 的前置条件。`openpi/my_behavior` 的推理链路在不修改 train 脚本的情况下也能输出 subtask，前提是 checkpoint 本身的语言/高层推理能力可用，并且 policy/model 侧的 high-level tokenize、placeholder mask、autoregressive decode、detokenize 链路正确对齐。
+
 ## ACoT-VLA Porting Plan
 
 ### A. Tokenizer / Transform
@@ -292,6 +294,7 @@ ACoT-VLA 移植后必须断言：
 - `sample_low_level_task()` 的 `output_tokens` 默认是 float array，建议显式设为 `jnp.int32`。
 - `sample_low_level_task()` 类型标注写的是 `-> str`，实际返回 tuple。
 - `embed_high_level_prefix()` 当前没有使用 `observation.token_ar_mask`，而是把语言 token 全部设为 causal mask。移植时要么保持一致，要么显式改成使用 tokenizer 产出的 `token_ar_mask`。
+- `openpi/my_behavior` 的 `sample_low_level_task()` 会先 right-align 有效 prefix，再从最后一个 prefix token 自回归解码；ACoT-VLA 如果输出固定乱码，优先检查这个对齐步骤和 decode mask，而不是先归因到 train。
 - Gemma KV cache update 用 `idx[0]`，更适合 batch size 1 的推理；如果要 batch decode，需要重新检查不同 prefix length 的情况。
 - `Policy.__init__()` 无条件构造 `jit_sample_low_level_task`，可能影响 PyTorch policy path。ACoT-VLA 若只用 JAX 可先不处理。
 - 生成 subtask 本身不需要 GenieSim；GenieSim 只用于闭环环境评测。

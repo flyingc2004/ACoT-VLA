@@ -130,7 +130,20 @@ class PaligemmaTokenizer:
             non_padding_tokens = non_padding_tokens[: eos_positions[0]]
         if non_padding_tokens.size == 0:
             return ""
-        return self._tokenizer.decode(non_padding_tokens.tolist()).strip()
+        text = self._tokenizer.decode(non_padding_tokens.tolist()).strip()
+        if not text:
+            return ""
+
+        text = " ".join(text.split())
+        for idx, char in enumerate(text):
+            if ord(char) < 32 or ord(char) > 126:
+                text = text[:idx].strip()
+                break
+
+        sentence_ends = [idx for idx in (text.find("."), text.find("?"), text.find("!")) if idx >= 0]
+        if sentence_ends:
+            text = text[: min(sentence_ends) + 1].strip()
+        return text
 
 
 class FASTTokenizer:

@@ -19,6 +19,20 @@ import openpi.shared.nnx_utils as nnx_utils
 logger = logging.getLogger("ACoT_VLA")
 
 
+@jax.vmap
+def _left_to_right_align(x, input_mask, attn_mask):
+    assert x.ndim == 2
+    assert input_mask.ndim == 1
+    assert attn_mask.ndim == 2
+    assert x.shape[0] == input_mask.shape[0]
+    assert attn_mask.shape[0] == attn_mask.shape[1], attn_mask.shape
+    seqlen = jnp.max(input_mask * jnp.arange(input_mask.shape[0])) + 1
+    x = jnp.roll(x, -seqlen, axis=0)
+    input_mask = jnp.roll(input_mask, -seqlen, axis=0)
+    attn_mask = jnp.roll(attn_mask, -seqlen, axis=(0, 1))
+    return x, input_mask, attn_mask
+
+
 class MLP(nnx.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, *, activate: bool = True, rngs: nnx.Rngs, param_dtype=jnp.float32):
         self.fc1 = nnx.Linear(input_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
@@ -639,6 +653,12 @@ class ACOT_VLA(_model.BaseModel):
 
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_high_level_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        prefix_tokens, prefix_mask, prefix_attn_mask = _left_to_right_align(
+            prefix_tokens, prefix_mask, prefix_attn_mask
+        )
+        prefill_size = prefix_tokens.shape[1]
+        prefill_len = jnp.sum(prefix_mask, axis=-1).astype(jnp.int32)
+        prefix_start = prefill_size - prefill_len
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
 
         (prefix_out, _, _), kv_cache = self.PaliGemma.llm(
@@ -647,7 +667,9 @@ class ACOT_VLA(_model.BaseModel):
             positions=positions,
             adarms_cond=[None, None, None],
         )
-        last_logits = self.PaliGemma.llm(prefix_out[:, -1:], method="deembed")
+        last_token_embedding = prefix_out[:, -1:]
+        last_logits = self.PaliGemma.llm(last_token_embedding, method="deembed")
+        last_logits = jax.nn.log_softmax(last_logits, axis=-1)
         output_tokens = jnp.zeros((batch_size, max_decoding_steps), dtype=jnp.int32)
         active = jnp.ones((batch_size, 1), dtype=jnp.bool_)
 
@@ -663,9 +685,12 @@ class ACOT_VLA(_model.BaseModel):
             output_tokens = output_tokens.at[:, step].set(token[:, 0])
 
             token_embedding = self.PaliGemma.llm(token, method="embed")
-            generated_mask = output_tokens[:, : step + 1] != 0
-            decode_mask = jnp.concatenate([prefix_mask, generated_mask], axis=1)[:, None, :]
-            decode_positions = jnp.sum(prefix_mask, axis=-1)[:, None] + step
+            key_positions = jnp.arange(prefill_size + step + 1, dtype=jnp.int32)[None, None, :]
+            decode_mask = jnp.logical_and(
+                key_positions >= prefix_start[:, None, None],
+                key_positions < prefill_size + step + 1,
+            )
+            decode_positions = prefill_len[:, None] + step
 
             (prefix_out, _, _), kv_cache = self.PaliGemma.llm(
                 [token_embedding, None, None],
@@ -675,6 +700,7 @@ class ACOT_VLA(_model.BaseModel):
                 adarms_cond=[None, None, None],
             )
             last_logits = self.PaliGemma.llm(prefix_out[:, -1:], method="deembed")
+            last_logits = jax.nn.log_softmax(last_logits, axis=-1)
             active = jnp.logical_and(active, token != paligemma_eos_token)
 
         generated_mask = output_tokens != 0

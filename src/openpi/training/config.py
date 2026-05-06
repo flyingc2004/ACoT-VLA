@@ -1871,7 +1871,16 @@ _CONFIGS = [
         # For the ICRA sim challenge, we set both coarse and fine action horizons to 30 since the tasks are relatively long-horizon.
         # We also use both explicit and implicit action reasoners, and use the downsample-based implicit extractor.
         # You can modify these design choices based on the specific tasks and dataset. 
-        model=acot_vla.ACOTConfig(coarse_action_horizon=30, action_horizon=30, paligemma_variant="gemma_2b_lora", adopt_explicit_action_reasoner=True, adopt_implicit_action_reasoner=True, downsample_based_implicit_extractor=True),
+        model=acot_vla.ACOTConfig(
+            coarse_action_horizon=30,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            adopt_explicit_action_reasoner=True,
+            adopt_implicit_action_reasoner=True,
+            downsample_based_implicit_extractor=True,
+            enable_subtask_generation=True,
+            subtask_temperature=0.0,
+        ),
         data=LerobotACOTGo2DataConfig(
             default_prompt = "This is the icra simulation challenge baseline config. Please refer to the README for details.",
             # Fill in the 9 tasks for training. You can use all 9 tasks, or a subset of them based on your preference.

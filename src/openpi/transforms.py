@@ -132,12 +132,33 @@ class InjectDefaultPrompt(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class InjectDefaultSubtask(DataTransformFn):
+    subtask: str
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "subtask" not in data:
+            data["subtask"] = np.asarray(self.subtask)
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
 class Normalize(DataTransformFn):
     norm_stats: at.PyTree[NormStats] | None
     # If true, will use quantile normalization. Otherwise, normal z-score normalization will be used.
     use_quantiles: bool = False
     # If true, will raise an error if any of the keys in the norm stats are not present in the data.
     strict: bool = False
+
+    def __init__(
+        self,
+        norm_stats: at.PyTree[NormStats] | None,
+        use_quantiles: bool = False,
+        strict: bool = False,
+    ):
+        object.__setattr__(self, "norm_stats", norm_stats)
+        object.__setattr__(self, "use_quantiles", use_quantiles)
+        object.__setattr__(self, "strict", strict)
+        self.__post_init__()
 
     def __post_init__(self):
         if self.norm_stats is not None and self.use_quantiles:
@@ -170,6 +191,15 @@ class Unnormalize(DataTransformFn):
     norm_stats: at.PyTree[NormStats] | None
     # If true, will use quantile normalization. Otherwise, normal z-score normalization will be used.
     use_quantiles: bool = False
+
+    def __init__(
+        self,
+        norm_stats: at.PyTree[NormStats] | None,
+        use_quantiles: bool = False,
+    ):
+        object.__setattr__(self, "norm_stats", norm_stats)
+        object.__setattr__(self, "use_quantiles", use_quantiles)
+        self.__post_init__()
 
     def __post_init__(self):
         if self.norm_stats is not None and self.use_quantiles:
