@@ -1880,6 +1880,8 @@ _CONFIGS = [
             downsample_based_implicit_extractor=True,
             enable_subtask_generation=True,
             subtask_temperature=0.0,
+            subtask_min_decoding_steps=2,
+            subtask_vocab_max_token=240_000,
         ),
         data=LerobotACOTGo2DataConfig(
             default_prompt = "This is the icra simulation challenge baseline config. Please refer to the README for details.",

@@ -295,6 +295,9 @@ ACoT-VLA 移植后必须断言：
 - `sample_low_level_task()` 类型标注写的是 `-> str`，实际返回 tuple。
 - `embed_high_level_prefix()` 当前没有使用 `observation.token_ar_mask`，而是把语言 token 全部设为 causal mask。移植时要么保持一致，要么显式改成使用 tokenizer 产出的 `token_ar_mask`。
 - `openpi/my_behavior` 的 `sample_low_level_task()` 会先 right-align 有效 prefix，再从最后一个 prefix token 自回归解码；ACoT-VLA 如果输出固定乱码，优先检查这个对齐步骤和 decode mask，而不是先归因到 train。
+- 如果 decode 出现空字符串、单字符 `"1"`、或 `255xxx` 高位 Unicode token，说明 logits 选到了 EOS/非自然语言 token；推理侧可以先用 `subtask_min_decoding_steps` 和 `subtask_vocab_max_token` 约束输出，避免 PaliGemma loc/seg/Unicode 噪声 token 污染 subtask text。
+- 如果 decode 泄漏 `Task:` / `Subtask:` / `Action:`、`1No...`、重复词、或以 `in/on/to/the` 等残缺介词/冠词结尾，server 侧应清洗并用同 task 的 last-good subtask 兜底。合法性检查分两层：先判断是否是完整动作短语，再要求它与当前 high-level prompt 的内容词有交集；否则语法通顺但与主任务无关的 subtask 也会污染输出。
+- last-good 尚未建立时，应从当前 prompt 抽取第一条可执行短语作为 prompt fallback，例如 `Grasp the two handles of the pot and place it on the stove` -> `Grasp the two handles of the pot`。
 - Gemma KV cache update 用 `idx[0]`，更适合 batch size 1 的推理；如果要 batch decode，需要重新检查不同 prefix length 的情况。
 - `Policy.__init__()` 无条件构造 `jit_sample_low_level_task`，可能影响 PyTorch policy path。ACoT-VLA 若只用 JAX 可先不处理。
 - 生成 subtask 本身不需要 GenieSim；GenieSim 只用于闭环环境评测。

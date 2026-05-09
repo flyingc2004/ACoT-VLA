@@ -1,6 +1,7 @@
 import logging
 import pathlib
 import numpy as np
+import re
 import sentencepiece
 import string
 from transformers import AutoProcessor
@@ -121,24 +122,47 @@ class PaligemmaTokenizer:
             np.asarray(loss_mask, dtype=bool),
         )
 
-    def detokenize(self, tokens: np.ndarray) -> str:
-        """Decode tokens back to text, stopping at EOS and ignoring padding."""
+    def detokenize_raw(self, tokens: np.ndarray, *, stop_at_eos: bool = True) -> str:
+        """Decode tokens back to text with only padding/EOS handling."""
         tokens = np.asarray(tokens, dtype=np.int32)
         non_padding_tokens = tokens[tokens != 0]
-        eos_positions = np.where(non_padding_tokens == 1)[0]
-        if eos_positions.size:
-            non_padding_tokens = non_padding_tokens[: eos_positions[0]]
+        if stop_at_eos:
+            eos_positions = np.where(non_padding_tokens == 1)[0]
+            if eos_positions.size:
+                non_padding_tokens = non_padding_tokens[: eos_positions[0]]
         if non_padding_tokens.size == 0:
             return ""
-        text = self._tokenizer.decode(non_padding_tokens.tolist()).strip()
+        return self._tokenizer.decode(non_padding_tokens.tolist()).strip()
+
+    def detokenize(self, tokens: np.ndarray) -> str:
+        """Decode tokens back to text, stopping at EOS and cleaning display noise."""
+        text = self.detokenize_raw(tokens, stop_at_eos=True)
         if not text:
             return ""
 
         text = " ".join(text.split())
+        text = re.sub(r"(?<=[A-Za-z0-9])(?=(?:No|Task|Subtask|Action)\b)", " ", text)
+        text = re.sub(r"^\s*\d+[\).:-]?\s*", "", text)
+
+        marker_match = re.search(r"(?i)\b(?:task|subtask|action)\s*:", text)
+        if marker_match is not None:
+            if marker_match.start() == 0:
+                text = text[marker_match.end() :].strip()
+            else:
+                text = text[: marker_match.start()].strip(" :;,-0123456789")
+
+        no_match = re.search(r"(?i)(?:^|\s)no\b", text)
+        if no_match is not None and no_match.start() == 0:
+            return ""
+        if no_match is not None:
+            text = text[: no_match.start()].strip()
+
         for idx, char in enumerate(text):
             if ord(char) < 32 or ord(char) > 126:
                 text = text[:idx].strip()
                 break
+
+        text = re.sub(r"\b([A-Za-z]+)(?:\s+\1\b){2,}", r"\1", text, flags=re.IGNORECASE)
 
         sentence_ends = [idx for idx in (text.find("."), text.find("?"), text.find("!")) if idx >= 0]
         if sentence_ends:

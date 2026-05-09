@@ -33,6 +33,22 @@ def _left_to_right_align(x, input_mask, attn_mask):
     return x, input_mask, attn_mask
 
 
+def _mask_subtask_logits(
+    logits: at.Float[at.Array, "b 1 v"],
+    eos_token: int,
+    max_text_token: int,
+    *,
+    allow_eos: bool,
+) -> at.Float[at.Array, "b 1 v"]:
+    token_ids = jnp.arange(logits.shape[-1], dtype=jnp.int32)
+    # PaliGemma's upper vocabulary includes loc/seg tokens and many rare
+    # unicode pieces that are not useful for English subtask generation.
+    allowed = (token_ids >= 3) & (token_ids < max_text_token)
+    if allow_eos:
+        allowed = allowed | (token_ids == eos_token)
+    return jnp.where(allowed[None, None, :], logits, jnp.asarray(-1e30, logits.dtype))
+
+
 class MLP(nnx.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, *, activate: bool = True, rngs: nnx.Rngs, param_dtype=jnp.float32):
         self.fc1 = nnx.Linear(input_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
@@ -302,7 +318,9 @@ class ACOTConfig(_model.BaseModelConfig):
 
     enable_subtask_generation: bool = False
     subtask_max_decoding_steps: int = 25
+    subtask_min_decoding_steps: int = 2
     subtask_temperature: float = 0.1
+    subtask_vocab_max_token: int = 240_000
     subtask_ce_loss_weight: float = 0.1
     subtask_use_state_input: bool = False
 
@@ -542,7 +560,9 @@ class ACOT_VLA(_model.BaseModel):
         self.coarse_action_horizon = config.coarse_action_horizon
         self.enable_subtask_generation = config.enable_subtask_generation
         self.subtask_max_decoding_steps = config.subtask_max_decoding_steps
+        self.subtask_min_decoding_steps = config.subtask_min_decoding_steps
         self.subtask_temperature = config.subtask_temperature
+        self.subtask_vocab_max_token = config.subtask_vocab_max_token
         self.subtask_ce_loss_weight = config.subtask_ce_loss_weight
 
 
@@ -675,10 +695,16 @@ class ACOT_VLA(_model.BaseModel):
 
         for step in range(max_decoding_steps):
             rng, step_rng = jax.random.split(rng)
+            step_logits = _mask_subtask_logits(
+                last_logits,
+                paligemma_eos_token,
+                self.subtask_vocab_max_token,
+                allow_eos=step >= self.subtask_min_decoding_steps,
+            )
             token = jax.lax.cond(
                 temperature > 0.0,
-                lambda _: jax.random.categorical(step_rng, last_logits / temperature, axis=-1),
-                lambda _: jnp.argmax(last_logits, axis=-1),
+                lambda _: jax.random.categorical(step_rng, step_logits / temperature, axis=-1),
+                lambda _: jnp.argmax(step_logits, axis=-1),
                 operand=None,
             ).astype(jnp.int32)
             token = jnp.where(active, token, jnp.zeros_like(token))
