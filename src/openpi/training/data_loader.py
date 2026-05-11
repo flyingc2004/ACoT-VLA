@@ -2,6 +2,7 @@ from collections.abc import Iterator, Sequence
 import copy
 import multiprocessing
 import os
+import pathlib
 import typing
 from typing import Protocol, SupportsIndex, TypeVar
 
@@ -20,6 +21,69 @@ from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 
 T_co = TypeVar("T_co", covariant=True)
+
+
+def _local_lerobot_path(repo_id: str) -> pathlib.Path | None:
+    path = pathlib.Path(repo_id).expanduser()
+    if path.is_absolute() or path.exists():
+        return path
+    return None
+
+
+def _validate_local_lerobot_dataset(path: pathlib.Path) -> None:
+    if not path.exists():
+        raise FileNotFoundError(f"Local LeRobot dataset path does not exist: {path}")
+
+    required_dirs = ("meta", "data")
+    missing_dirs = [name for name in required_dirs if not (path / name).is_dir()]
+    if (path / "videos.tar.gz.000").exists() and not (path / "videos").is_dir():
+        missing_dirs.append("videos")
+
+    if not missing_dirs:
+        return
+
+    archives = [name for name in ("meta.tar.gz.000", "data.tar.gz.000", "videos.tar.gz.000") if (path / name).exists()]
+    archive_hint = ""
+    if archives:
+        archive_hint = (
+            f" Found packaged archives: {', '.join(archives)}. Extract them once, for example:\n"
+            f"  cd {path}\n"
+            f"  for f in meta data videos; do [ -f \"$f.tar.gz.000\" ] && tar -xzf \"$f.tar.gz.000\"; done"
+        )
+
+    raise FileNotFoundError(
+        f"Local LeRobot dataset is not ready: {path}. Missing directories: {', '.join(missing_dirs)}."
+        f"{archive_hint}"
+    )
+
+
+def _resolve_single_lerobot_repo(repo_id: str) -> tuple[str, pathlib.Path | None]:
+    local_path = _local_lerobot_path(repo_id)
+    if local_path is None:
+        return repo_id, None
+    _validate_local_lerobot_dataset(local_path)
+    return local_path.name, local_path
+
+
+def _resolve_lerobot_repo_list(repo_ids: Sequence[str]) -> tuple[list[str], pathlib.Path | None]:
+    local_paths = [_local_lerobot_path(repo_id) for repo_id in repo_ids]
+    if not any(local_paths):
+        return list(repo_ids), None
+    if not all(local_paths):
+        raise ValueError("Cannot mix local LeRobot dataset paths and HuggingFace repo ids in one repo_id list.")
+
+    resolved_paths = [path.resolve() for path in local_paths if path is not None]
+    for path in resolved_paths:
+        _validate_local_lerobot_dataset(path)
+
+    parents = {path.parent for path in resolved_paths}
+    if len(parents) != 1:
+        raise ValueError(
+            "Local MultiLeRobotDataset paths must share the same parent directory. "
+            f"Got parents: {sorted(str(parent) for parent in parents)}"
+        )
+
+    return [path.name for path in resolved_paths], next(iter(parents))
 
 
 class Dataset(Protocol[T_co]):
@@ -225,12 +289,15 @@ def create_torch_dataset(
         action_chunk_size = model_config.action_horizon
 
     if isinstance(repo_id, list):
+        resolved_repo_ids, dataset_root = _resolve_lerobot_repo_list(repo_id)
         # If repo_id is a list, create a dataset for each repo_id and concatenate them.
         dataset_metas = [
-            lerobot_dataset.LeRobotDatasetMetadata(r) for r in repo_id
+            lerobot_dataset.LeRobotDatasetMetadata(r, root=None if dataset_root is None else dataset_root / r)
+            for r in resolved_repo_ids
         ]
         dataset = lerobot_dataset.MultiLeRobotDataset(
-            repo_id,
+            resolved_repo_ids,
+            root=dataset_root,
             delta_timestamps={
                 key: [t / dataset_meta.fps for t in range(action_chunk_size)]
                 for dataset_meta in dataset_metas
@@ -239,7 +306,7 @@ def create_torch_dataset(
             # Add this section to allow for dropped frames (e.g., N frames tolerance)
             tolerances_s={
                 single_repo: 5 / dataset_meta.fps  # Replace N with the number of frames you want to allow
-                for single_repo, dataset_meta in zip(repo_id, dataset_metas)
+                for single_repo, dataset_meta in zip(resolved_repo_ids, dataset_metas)
             }
         )
         if data_config.prompt_from_task:
@@ -261,9 +328,11 @@ def create_torch_dataset(
             print(f"Dataset {i} has {len(d)} frames.")
 
     else:
-        dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+        resolved_repo_id, dataset_root = _resolve_single_lerobot_repo(repo_id)
+        dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(resolved_repo_id, root=dataset_root)
         dataset = lerobot_dataset.LeRobotDataset(
-            data_config.repo_id,
+            resolved_repo_id,
+            root=dataset_root,
             delta_timestamps={
                 key: [t / dataset_meta.fps for t in range(action_chunk_size)]
                 for key in data_config.action_sequence_keys

@@ -69,7 +69,7 @@ class AssetsConfig:
 @dataclasses.dataclass(frozen=True)
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
-    repo_id: str | None = None
+    repo_id: str | Sequence[str] | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -220,7 +220,7 @@ class ModelTransformFactory(GroupFactory):
 @dataclasses.dataclass(frozen=True)
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id.
-    repo_id: str = tyro.MISSING
+    repo_id: str | Sequence[str] = tyro.MISSING
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -2032,6 +2032,11 @@ _CONFIGS = [
         save_interval=10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
         num_workers=32 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
         batch_size=32 if not os.getenv("DEBUG_MODE", default=False) == "true" else 8,
+        freeze_filter=pi0.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=30,
+        ).get_freeze_filter(freeze_vision=True, freeze_llm=True),
     ),
     # genie sim 3.0 baseline configs
     TrainConfig(

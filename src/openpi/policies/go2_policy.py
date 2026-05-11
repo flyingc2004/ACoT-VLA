@@ -25,6 +25,7 @@ class Go2Inputs(transforms.DataTransformFn):
 
     state_mask: np.ndarray | None = None
     action_mask: np.ndarray | None = None
+    require_images: bool = True
 
     # The expected cameras names. All input cameras must be in this set. Missing cameras will be
     # replaced with black images and the corresponding `image_mask` will be set to False.
@@ -50,8 +51,9 @@ class Go2Inputs(transforms.DataTransformFn):
 
         # Parse images to uint8 (H,W,C) since LeRobot automatically stores as float32 (C,H,W)
         images = {}
+        image_mask = {}
         for camera in self.EXPECTED_CAMERAS:
-            if camera in data["images"]:
+            if camera in data.get("images", {}):
                 img = data["images"][camera]
                 # Convert torch tensor to numpy array if needed
                 if isinstance(img, torch.Tensor):
@@ -63,19 +65,20 @@ class Go2Inputs(transforms.DataTransformFn):
                 if img.shape[0] == 3:
                     img = np.transpose(img, (1, 2, 0))
                 images[self.rename_map[camera]] = img
+                image_mask[self.rename_map[camera]] = np.True_
             else:
-                raise ValueError(f"Camera {camera} not found in data")
-
-        # Create image mask based on available cameras
-        image_mask = {self.rename_map[camera]: np.True_ for camera in self.EXPECTED_CAMERAS}
+                if self.require_images:
+                    raise ValueError(f"Camera {camera} not found in data")
+                image_mask[self.rename_map[camera]] = np.False_
 
 
         # Prepare inputs dictionary
         inputs = {
-            "image": images,
-            "image_mask": image_mask,
             "state": state,
         }
+        if images or self.require_images:
+            inputs["image"] = images
+            inputs["image_mask"] = image_mask
 
         # Add actions if present
         if "actions" in data:
@@ -113,6 +116,7 @@ class Go2ACOTInputs(transforms.DataTransformFn):
     state_mask: np.ndarray | None = None
     action_mask: np.ndarray | None = None
     prompt_map_inject_to_training: dict[str, Sequence[object]] | None = None
+    require_images: bool = True
 
     EXPECTED_CAMERAS: ClassVar[tuple[str, ...]] = ("top_head", "hand_left", "hand_right")
 
@@ -189,8 +193,9 @@ class Go2ACOTInputs(transforms.DataTransformFn):
 
         # Parse images to uint8 (H,W,C) since LeRobot automatically stores as float32 (C,H,W)
         images = {}
+        image_mask = {}
         for camera in self.EXPECTED_CAMERAS:
-            if camera in data["images"]:
+            if camera in data.get("images", {}):
                 img = data["images"][camera]
                 if isinstance(img, torch.Tensor):
                     img = img.cpu().numpy()
@@ -199,18 +204,19 @@ class Go2ACOTInputs(transforms.DataTransformFn):
                 if img.shape[0] == 3:
                     img = np.transpose(img, (1, 2, 0))
                 images[self.rename_map[camera]] = img
+                image_mask[self.rename_map[camera]] = np.True_
             else:
-                raise ValueError(f"Camera {camera} not found in data")
-
-        # Create image mask based on available cameras
-        image_mask = {self.rename_map[camera]: np.True_ for camera in self.EXPECTED_CAMERAS}
+                if self.require_images:
+                    raise ValueError(f"Camera {camera} not found in data")
+                image_mask[self.rename_map[camera]] = np.False_
 
         # Prepare inputs dictionary
         inputs = {
-            "image": images,
-            "image_mask": image_mask,
             "state": state,
         }
+        if images or self.require_images:
+            inputs["image"] = images
+            inputs["image_mask"] = image_mask
 
         if self.acot_action_generation is not None and "actions" in data:
             action_horizons = self.acot_action_generation[0]

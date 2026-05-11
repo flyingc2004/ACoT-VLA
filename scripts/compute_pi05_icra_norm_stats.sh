@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export R2A_DATASET_ROOT="${R2A_DATASET_ROOT:-/mnt/a/ljz/.tmp/agibot_r2a_lerobot}"
+export BASELINE_NORM_ASSETS_DIR="${BASELINE_NORM_ASSETS_DIR:-/mnt/a/ljz/ACoT-VLA/checkpoints/pi05_icra_norm_assets}"
+export HF_HOME="${HF_HOME:-/mnt/a/ljz/.tmp/huggingface}"
+export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/mnt/a/ljz/.tmp/matplotlib}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/mnt/a/ljz/.tmp/uv}"
+export FFMPEG_LIB_DIR="${FFMPEG_LIB_DIR:-/mnt/a/ljz/miniconda/lib}"
+if [[ -d "${FFMPEG_LIB_DIR}" ]]; then
+  export LD_LIBRARY_PATH="${FFMPEG_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+
+CONFIG_NAME="${CONFIG_NAME:-pi05_icra_simulation_challenge}"
+MAX_FRAMES="${MAX_FRAMES:-}"
+
+cd "$(dirname "$0")/.."
+
+if [[ -n "${MAX_FRAMES}" ]]; then
+  uv run python scripts/compute_norm_stats.py --config-name "${CONFIG_NAME}" --max-frames "${MAX_FRAMES}"
+else
+  uv run python scripts/compute_norm_stats.py --config-name "${CONFIG_NAME}"
+fi

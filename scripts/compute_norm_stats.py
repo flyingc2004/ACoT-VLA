@@ -10,6 +10,7 @@ import pathlib
 import tqdm
 import tyro
 import random
+import dataclasses
 import openpi.models.model as _model
 import openpi.shared.normalize as normalize
 import openpi.training.config as _config
@@ -21,39 +22,93 @@ class RemoveStrings(transforms.DataTransformFn):
         return {k: v for k, v in x.items() if not np.issubdtype(np.asarray(v).dtype, np.str_)}
 
 
+def _disable_visual_feature_loading(dataset) -> None:
+    """Avoid decoding videos/images when norm stats only need numeric features."""
+    if hasattr(dataset, "meta") and hasattr(dataset.meta, "info"):
+        features = dataset.meta.info.get("features", {})
+        for key, feature in list(features.items()):
+            if feature.get("dtype") in ("image", "video"):
+                del features[key]
+
+    if hasattr(dataset, "_dataset"):
+        _disable_visual_feature_loading(dataset._dataset)
+    if hasattr(dataset, "_datasets"):
+        for child in dataset._datasets:
+            _disable_visual_feature_loading(child)
+
+
+def _drop_visual_repack_fields(structure):
+    if isinstance(structure, dict):
+        result = {}
+        for key, value in structure.items():
+            if key in ("image", "images", "image_mask"):
+                continue
+            pruned = _drop_visual_repack_fields(value)
+            if pruned not in ({}, None):
+                result[key] = pruned
+        return result
+    return structure
+
+
+def _norm_stat_transform(transform: transforms.DataTransformFn) -> transforms.DataTransformFn:
+    if isinstance(transform, transforms.RepackTransform):
+        return transforms.RepackTransform(_drop_visual_repack_fields(transform.structure))
+    if dataclasses.is_dataclass(transform) and hasattr(transform, "require_images"):
+        return dataclasses.replace(transform, require_images=False)
+    return transform
+
+
 def create_torch_dataloader(
     data_config: _config.DataConfig,
     batch_size: int,
     model_config: _model.BaseModelConfig,
     max_frames: int | None = None,
+    num_workers: int = 0,
 ) -> tuple[_data_loader.Dataset, int]:
     if data_config.repo_id is None:
         raise ValueError("Data config must have a repo_id")
     dataset = _data_loader.create_torch_dataset(data_config, model_config)
+    _disable_visual_feature_loading(dataset)
     dataset = _data_loader.TransformedDataset(
         dataset,
         [
-            *data_config.repack_transforms.inputs,
-            *data_config.data_transforms.inputs,
-            transforms.ResizeImages(224, 224),
+            *[_norm_stat_transform(transform) for transform in data_config.repack_transforms.inputs],
+            *[_norm_stat_transform(transform) for transform in data_config.data_transforms.inputs],
             # Remove strings since they are not supported by JAX and are not needed to compute norm stats.
             RemoveStrings(),
         ],
     )
-    # dataset = _data_loader.SafeDataset(dataset)
-    if max_frames is not None and max_frames < len(dataset):
-        num_batches = max_frames // batch_size
+
+    sampler = None
+    available_frames = len(dataset)
+    shuffle = False
+    if data_config.dataloader_sampler:
+        from openpi.training.sampler import FrameSampler
+
+        sampler = FrameSampler(
+            dataset,
+            data_config.dataloader_sampler,
+            reset_truncation_mode=data_config.subtask_reset_truncation_mode,
+        )
+        available_frames = len(sampler)
+    elif max_frames is not None and max_frames < len(dataset):
         shuffle = True
+
+    requested_frames = min(max_frames, available_frames) if max_frames is not None else available_frames
+    if 0 < requested_frames < batch_size <= available_frames:
+        num_batches = 1
     else:
-        num_batches = len(dataset) // batch_size
-        shuffle = False
+        num_batches = requested_frames // batch_size
+
+    dataset = _data_loader.SafeDataset(dataset)
     
     data_loader = _data_loader.TorchDataLoader(
         dataset,
         local_batch_size=batch_size,
-        num_workers=8,
-        shuffle=True,
+        num_workers=num_workers,
+        shuffle=shuffle,
         num_batches=num_batches,
+        sampler=sampler,
     )
     return data_loader, num_batches
 
@@ -86,7 +141,7 @@ def create_rlds_dataloader(
     return data_loader, num_batches
 
 
-def main(config_name: str, max_frames: int | None = None):
+def main(config_name: str, max_frames: int | None = None, num_workers: int = 0):
     config = _config.get_config(config_name)
     data_config = config.data.create(config.assets_dirs, config.model)
 
@@ -96,11 +151,12 @@ def main(config_name: str, max_frames: int | None = None):
         )
     else:
         data_loader, num_batches = create_torch_dataloader(
-            data_config, config.batch_size, config.model, max_frames
+            data_config, config.batch_size, config.model, max_frames, num_workers
         )
 
-    keys = ["state", "actions", "coarse_actions"]
-    stats = {key: normalize.RunningStats() for key in keys}
+    candidate_keys = ["state", "actions", "coarse_actions"]
+    stats = {key: normalize.RunningStats() for key in candidate_keys}
+    active_keys = set()
 
     sample_ratio = 0.1
     if num_batches <= 0:
@@ -110,18 +166,34 @@ def main(config_name: str, max_frames: int | None = None):
     data_iter = iter(data_loader)
     pbar = tqdm.tqdm(total=max_batches, desc="Computing stats")
     valid_batches = 0
+    skipped_batches = 0
+    last_error = None
     while valid_batches < max_batches:
         try:
             batch = next(data_iter)
         except StopIteration:
             break
         except Exception as e:
+            skipped_batches += 1
+            last_error = e
             print(f"\n[Warning] Skipped a bad batch due to error: {e}")
             continue
 
-        for key in keys:
-            values = np.asarray(batch[key][0])
+        updated = False
+        for key in candidate_keys:
+            if key not in batch:
+                continue
+            values = np.asarray(batch[key])
+            if values.size == 0:
+                continue
             stats[key].update(values.reshape(-1, values.shape[-1]))
+            active_keys.add(key)
+            updated = True
+
+        if not updated:
+            skipped_batches += 1
+            print(f"\n[Warning] Skipped a batch without any of {candidate_keys}.")
+            continue
 
         pbar.update(1)
         valid_batches += 1
@@ -129,12 +201,14 @@ def main(config_name: str, max_frames: int | None = None):
     pbar.close()
 
     if valid_batches == 0:
+        detail = f" Last batch error: {last_error}" if last_error is not None else ""
         raise RuntimeError(
             "No valid batches were collected while computing normalization stats. "
-            "Please check dataset paths and data integrity."
+            f"Skipped batches: {skipped_batches}. Please check dataset paths and data integrity."
+            f"{detail}"
         )
 
-    norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
+    norm_stats = {key: stats[key].get_statistics() for key in candidate_keys if key in active_keys}
 
     assets = getattr(config.data, "assets", None)
     asset_id = None

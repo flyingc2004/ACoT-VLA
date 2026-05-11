@@ -185,3 +185,7 @@ logs/
 /openpi/
 /openpi_subtask_generation/
 .codex
+codex_migration_context_v2.md
+.gitignore
+codex_migration_context.md
+ok.txt
