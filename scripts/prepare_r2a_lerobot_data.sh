@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source_root="${R2A_SOURCE_ROOT:-/mnt/a/sharedata/agibot_challenge/data/Reasoning2Action-Sim/dataset_without_depth}"
-target_root="${R2A_PREPARED_ROOT:-${R2A_DATASET_ROOT:-/mnt/a/ljz/.tmp/agibot_r2a_lerobot}}"
+source_root="${R2A_SOURCE_ROOT:-/datadrive4/qid/agibot_challenge/data/Reasoning2Action-Sim/dataset_without_depth}"
+target_root="${R2A_PREPARED_ROOT:-${R2A_DATASET_ROOT:-/datadrive4/qid/agibot_r2a_lerobot}}"
 
 if [[ ! -d "${source_root}" ]]; then
   echo "Source dataset root does not exist: ${source_root}" >&2
