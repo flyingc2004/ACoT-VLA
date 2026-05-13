@@ -2027,7 +2027,7 @@ _CONFIGS = [
             extra_delta_transform=True,
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=10_000,
+            warmup_steps=1_000,
             peak_lr=5e-5,
             decay_steps=1_000_000,
             decay_lr=5e-5,
@@ -2075,7 +2075,7 @@ _CONFIGS = [
             extra_delta_transform=True,
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=10_000,
+            warmup_steps=1_000,
             peak_lr=5e-5,
             decay_steps=1_000_000,
             decay_lr=5e-5,
