@@ -97,6 +97,11 @@ class DataConfig:
 
     prompt_from_hl_instruction: bool = False
 
+    # If true, will use the episode-level high-level instruction from LeRobot metadata as the prompt.
+    # This is useful for tasks whose task name is generic but whose episode instruction contains target details
+    # such as object color.
+    prompt_from_episode_instruction: bool = False
+
     dataloader_sampler: str | None = ''
 
     # Controls reset-like interval truncation in subtask sampler.
@@ -2014,7 +2019,11 @@ _CONFIGS = [
                 asset_id=".",
             ),
             prompt_map_inject_to_training=_icra_prompt_map(),
-            base_config=DataConfig(dataloader_sampler="subtask", prompt_from_task=True),
+            base_config=DataConfig(
+                dataloader_sampler="subtask",
+                prompt_from_task=True,
+                prompt_from_episode_instruction=True,
+            ),
             extra_delta_transform=True,
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -2058,7 +2067,11 @@ _CONFIGS = [
                 asset_id=".",
             ),
             prompt_map_inject_to_training=_icra_prompt_map(),
-            base_config=DataConfig(dataloader_sampler="subtask", prompt_from_task=True),
+            base_config=DataConfig(
+                dataloader_sampler="subtask",
+                prompt_from_task=True,
+                prompt_from_episode_instruction=True,
+            ),
             extra_delta_transform=True,
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
