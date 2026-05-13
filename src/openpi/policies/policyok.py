@@ -5,7 +5,6 @@ import time
 from typing import Any, TypeAlias
 import copy
 import traceback
-
 import flax
 import flax.traverse_util
 import jax
@@ -31,12 +30,10 @@ class Policy(BasePolicy):
         *,
         rng: at.KeyArrayLike | None = None,
         transforms: Sequence[_transforms.DataTransformFn] = (),
-        high_level_transforms: Sequence[_transforms.DataTransformFn] = (),
         output_transforms: Sequence[_transforms.DataTransformFn] = (),
         sample_kwargs: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ):
-        _ = high_level_transforms  # Accepted for policy_config compatibility; this policy does not use subtask generation.
         self._sample_actions = nnx_utils.module_jit(model.sample_actions)
         self._input_transform = _transforms.compose(transforms)
         self._output_transform = _transforms.compose(output_transforms)
@@ -44,16 +41,10 @@ class Policy(BasePolicy):
         self._sample_kwargs = sample_kwargs or {}
         self._metadata = metadata or {}
         self._sorting_prompt_controller: SortingContinuousPromptController | None = None
-        self._sorting_prompt_controller_loaded = False
-
-    def _get_sorting_prompt_controller(self) -> SortingContinuousPromptController | None:
-        if not self._sorting_prompt_controller_loaded:
-            self._sorting_prompt_controller_loaded = True
-            try:
-                self._sorting_prompt_controller = SortingContinuousPromptController.from_env()
-            except Exception:  # pylint: disable=broad-exception-caught
-                logging.warning("Failed to initialize sorting prompt controller:\n%s", traceback.format_exc())
-        return self._sorting_prompt_controller
+        try:
+            self._sorting_prompt_controller = SortingContinuousPromptController.from_env()
+        except Exception:  # pylint: disable=broad-exception-caught
+            logging.warning("Failed to initialize sorting prompt controller:\n%s", traceback.format_exc())
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
@@ -63,11 +54,8 @@ class Policy(BasePolicy):
 
         # For sorting continuous tasks, update prompt by two-state machine:
         # state0 --(task_terminal)--> state1 --(already_reset)--> state0 and switch to next color.
-        task_name = str(inputs.get("task_name", "")).strip()
-        is_sorting_continuous = "continuous" in task_name.lower()
-        sorting_prompt_controller = self._get_sorting_prompt_controller() if is_sorting_continuous else None
-        if sorting_prompt_controller is not None:
-            updated_prompt, phase_pred = sorting_prompt_controller.step(inputs)
+        if self._sorting_prompt_controller is not None:
+            updated_prompt, phase_pred = self._sorting_prompt_controller.step(inputs)
             if phase_pred is not None:
                 logging.info(
                     "Sorting phase prediction: label=%s conf=%.4f",
@@ -79,7 +67,8 @@ class Policy(BasePolicy):
                 inputs["prompt"] = updated_prompt
                 logging.info("Updated sorting continuous prompt to: %s", updated_prompt)
 
-        # There are other tasks that requires prompt mapping, we need to add them here.
+        # There are other tasks that requires prompt mapping, we need to add them here
+
         prompt_mapping = {
             "pour_workpiece": "Pour the workpiece into the box",
             "open_door": "Turn the doorknob and push the door",
@@ -107,7 +96,8 @@ class Policy(BasePolicy):
             ),
         }
 
-        if task_name in prompt_mapping and not inputs.get("prompt"):
+        task_name = str(inputs.get("task_name", "")).strip()
+        if task_name in prompt_mapping:
             new_prompt = prompt_mapping[task_name]
             inputs["prompt"] = new_prompt
 
@@ -139,7 +129,7 @@ class Policy(BasePolicy):
         inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
 
         start_time = time.monotonic()
-        self._rng, sample_rng = jax.random.split(self._rng)
+        self._rng, sample_rng = jax.random.split(self._rng)         
         outputs = {
             "state": inputs["state"]
         }
@@ -157,9 +147,10 @@ class Policy(BasePolicy):
             result = self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs)
 
         if isinstance(result, dict):
-            outputs.update(result)
+            outputs.update(result)    
         else:
             outputs["actions"] = result
+        # outputs["actions"] = inputs["actions"]
 
         # Unbatch and convert to np.ndarray.
         outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)

@@ -319,6 +319,22 @@ def create_torch_dataset(
                         _transforms.SegmentInstructionFromHighlevelInstruction(segment_map),
                     ],
                 )
+        if data_config.prompt_from_episode_instruction:
+            for n, d in enumerate(dataset._datasets):
+                episode_map = dataset_metas[n].info.get(
+                    "high_level_instruction",
+                    dataset_metas[n].info.get("high_level_instructions", {}),
+                )
+                segment_map = dataset_metas[n].info.get("instruction_segments", {})
+                dataset._datasets[n] = TransformedDataset(
+                    d,
+                    [
+                        _transforms.PromptFromEpisodeHighlevelInstruction(
+                            episode_map,
+                            instruction_segments=segment_map,
+                        ),
+                    ],
+                )
         if data_config.prompt_from_hl_instruction:
             for n, d in enumerate(dataset._datasets):
                 dataset._datasets[n] = TransformedDataset(
@@ -346,6 +362,21 @@ def create_torch_dataset(
                     _transforms.PromptFromLeRobotTask(dataset_meta.tasks),
                     _transforms.SegmentInstructionFromHighlevelInstruction(
                         dataset_meta.info.get("instruction_segments", {})
+                    ),
+                ],
+            )
+        if data_config.prompt_from_episode_instruction:
+            episode_map = dataset_meta.info.get(
+                "high_level_instruction",
+                dataset_meta.info.get("high_level_instructions", {}),
+            )
+            segment_map = dataset_meta.info.get("instruction_segments", {})
+            dataset = TransformedDataset(
+                dataset,
+                [
+                    _transforms.PromptFromEpisodeHighlevelInstruction(
+                        episode_map,
+                        instruction_segments=segment_map,
                     ),
                 ],
             )

@@ -494,6 +494,29 @@ def _join_episode_instructions(
     instructions = [text for text in instructions if text]
     return " ".join(instructions)
 
+
+def _find_episode_highlevel_instruction(
+    episode_instructions: dict,
+    episode_index: int,
+) -> str | None:
+    entry = episode_instructions.get(str(episode_index), episode_instructions.get(episode_index))
+    if entry is None:
+        return None
+
+    if isinstance(entry, Mapping):
+        for key in ("high_level_instruction", "instruction", "prompt"):
+            value = entry.get(key)
+            if value:
+                return str(value)
+        return None
+
+    if isinstance(entry, Sequence) and not isinstance(entry, (str, bytes)):
+        parts = [str(item).strip() for item in entry if str(item).strip()]
+        return " ".join(parts) if parts else None
+
+    return str(entry)
+
+
 @dataclasses.dataclass(frozen=True)
 class PromptFromHighlevelInstruction(DataTransformFn):
     """Extracts a prompt from the current LeRobot dataset task."""
@@ -514,6 +537,27 @@ class PromptFromHighlevelInstruction(DataTransformFn):
         if "prompt" not in result:
             result["prompt"] = instruction
         return result
+
+
+@dataclasses.dataclass(frozen=True)
+class PromptFromEpisodeHighlevelInstruction(DataTransformFn):
+    """Use the episode-level high-level instruction as the model prompt."""
+
+    episode_instructions: dict
+    instruction_segments: dict | None = None
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "episode_index" not in data:
+            return data
+
+        episode_index = int(data["episode_index"])
+        instruction = _find_episode_highlevel_instruction(self.episode_instructions, episode_index)
+        if not instruction and self.instruction_segments is not None:
+            instruction = _join_episode_instructions(self.instruction_segments, episode_index)
+        if not instruction:
+            return data
+
+        return {**data, "prompt": instruction, "episode_instruction": instruction}
 
 
 @dataclasses.dataclass(frozen=True)

@@ -97,6 +97,11 @@ class DataConfig:
 
     prompt_from_hl_instruction: bool = False
 
+    # If true, will use the episode-level high-level instruction from LeRobot metadata as the prompt.
+    # This is useful for tasks whose task name is generic but whose episode instruction contains target details
+    # such as object color.
+    prompt_from_episode_instruction: bool = False
+
     dataloader_sampler: str | None = ''
 
     # Controls reset-like interval truncation in subtask sampler.
@@ -2014,7 +2019,11 @@ _CONFIGS = [
                 asset_id=".",
             ),
             prompt_map_inject_to_training=_icra_prompt_map(),
-            base_config=DataConfig(dataloader_sampler="subtask", prompt_from_task=True),
+            base_config=DataConfig(
+                dataloader_sampler="subtask",
+                prompt_from_task=True,
+                prompt_from_episode_instruction=True,
+            ),
             extra_delta_transform=True,
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -2038,6 +2047,55 @@ _CONFIGS = [
             action_horizon=30,
         ).get_freeze_filter(freeze_vision=True, freeze_llm=True),
     ),
+    TrainConfig(
+        name="pi05_icra_sorting_packages",
+        checkpoint_base_dir=_env_path("PI05_CHECKPOINT_BASE_DIR", "./checkpoints"),
+        model=pi0.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=30,
+        ),
+        data=LerobotPi05Go2DataConfig(
+            default_prompt="This is the PI05 baseline config for sorting packages tasks.",
+            repo_id=_r2a_repo_ids(
+                "sorting_packages_part_1",
+                "sorting_packages_part_2",
+                "sorting_packages_part_3",
+            ),
+            assets=AssetsConfig(
+                assets_dir=os.getenv("BASELINE_NORM_ASSETS_DIR", str(_baseline_checkpoint_dir() / "assets")),
+                asset_id=".",
+            ),
+            prompt_map_inject_to_training=_icra_prompt_map(),
+            base_config=DataConfig(
+                dataloader_sampler="subtask",
+                prompt_from_task=True,
+                prompt_from_episode_instruction=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            os.getenv("PI05_BASE_PARAMS", "gs://openpi-assets-preview/checkpoints/pi05_may21_280k_v1/params")
+        ),
+        num_train_steps=50_000,
+        save_interval=10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
+        num_workers=32 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
+        batch_size=32 if not os.getenv("DEBUG_MODE", default=False) == "true" else 8,
+        freeze_filter=pi0.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=30,
+        ).get_freeze_filter(freeze_vision=True, freeze_llm=True),
+    ),
+
     # genie sim 3.0 baseline configs
     TrainConfig(
         name="acot_icra_simulation_challenge_reasoning_to_action",

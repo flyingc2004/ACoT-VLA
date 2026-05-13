@@ -6,13 +6,35 @@ from collections.abc import Sequence
 import numpy as np
 import torch
 import copy
-import re
 
 import openpi.models.model as _model
 import openpi.transforms as transforms
 
 
-SORT_PACKAGE_COLOR_PATTERN = re.compile(r"\b(white|red|black|yellow)\b", re.IGNORECASE)
+def _to_uint8_hwc(image) -> np.ndarray:
+    array = np.asarray(image)
+    if array.ndim == 4 and array.shape[0] == 1:
+        array = array[0]
+    if array.ndim != 3:
+        raise ValueError(f"Expected image with 3 dimensions, got shape {array.shape}")
+
+    if array.shape[0] in (1, 3, 4) and array.shape[-1] not in (1, 3, 4):
+        array = np.transpose(array, (1, 2, 0))
+    if array.shape[-1] == 1:
+        array = np.repeat(array, 3, axis=-1)
+    if array.shape[-1] == 4:
+        array = array[..., :3]
+    if array.shape[-1] != 3:
+        raise ValueError(f"Expected RGB image, got shape {array.shape}")
+
+    if np.issubdtype(array.dtype, np.floating):
+        max_value = np.nanmax(array) if array.size else 0.0
+        min_value = np.nanmin(array) if array.size else 0.0
+        if min_value >= -1.0 and max_value <= 1.0:
+            array = (array + 1.0) * 127.5 if min_value < 0.0 else array * 255.0
+        array = np.nan_to_num(array, nan=0.0, posinf=255.0, neginf=0.0)
+
+    return np.clip(array, 0, 255).astype(np.uint8)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,12 +80,7 @@ class Go2Inputs(transforms.DataTransformFn):
                 # Convert torch tensor to numpy array if needed
                 if isinstance(img, torch.Tensor):
                     img = img.cpu().numpy()
-                # Ensure image is in uint8 format
-                if np.issubdtype(img.dtype, np.floating):
-                    img = (255 * img).astype(np.uint8)
-                # Convert from [C,H,W] to [H,W,C] if needed
-                if img.shape[0] == 3:
-                    img = np.transpose(img, (1, 2, 0))
+                img = _to_uint8_hwc(img)
                 images[self.rename_map[camera]] = img
                 image_mask[self.rename_map[camera]] = np.True_
             else:
@@ -127,18 +144,6 @@ class Go2ACOTInputs(transforms.DataTransformFn):
     }
     acot_action_generation: Sequence[Sequence[int]] | None = None
 
-    def _extract_color_from_segment(self, data: dict) -> str | None:
-        # Prefer segment-level instruction text. Fallback to current prompt when available.
-        candidate_fields = ("segment_instruction", "segment_instructions", "prompt")
-        for key in candidate_fields:
-            raw_text = data.get(key)
-            if not isinstance(raw_text, str):
-                continue
-            match = SORT_PACKAGE_COLOR_PATTERN.search(raw_text)
-            if match is not None:
-                return match.group(1).lower()
-        return None
-
     def slice_state_and_action(self, data):
         # Slice the state and action to the expected dimensions based on the original data shape
         state_indices = None
@@ -153,36 +158,6 @@ class Go2ACOTInputs(transforms.DataTransformFn):
         if "actions" in data:
             assert data["actions"].shape[1] == 40
             data["actions"] = np.column_stack((data["actions"][:, 16:30], data["actions"][:, 0:2], data["actions"][:, 33:38]))
-        return data
-    
-    def random_inject_prompt(self, data):
-        task_name = data["task"]
-        if self.prompt_map_inject_to_training is not None and task_name in self.prompt_map_inject_to_training:
-            mapping = self.prompt_map_inject_to_training[task_name]
-            if len(mapping) < 2:
-                return data
-
-            default_prompt = mapping[0]
-            inject_prob = mapping[1]
-            if not isinstance(default_prompt, str):
-                return data
-            if isinstance(inject_prob, (int, float, np.floating, str)):
-                try:
-                    inject_prob_value = float(inject_prob)
-                except ValueError:
-                    return data
-            else:
-                return data
-
-            if isinstance(default_prompt, str) and "<color>" in default_prompt:
-                detected_color = self._extract_color_from_segment(data)
-                if detected_color is None:
-                    return data
-                default_prompt = default_prompt.replace("<color>", detected_color)
-
-            if np.random.rand() < inject_prob_value:
-                data["prompt"] = default_prompt
-    
         return data
 
     def __call__(self, data: dict) -> dict:
@@ -199,10 +174,7 @@ class Go2ACOTInputs(transforms.DataTransformFn):
                 img = data["images"][camera]
                 if isinstance(img, torch.Tensor):
                     img = img.cpu().numpy()
-                if np.issubdtype(img.dtype, np.floating):
-                    img = (255 * img).astype(np.uint8)
-                if img.shape[0] == 3:
-                    img = np.transpose(img, (1, 2, 0))
+                img = _to_uint8_hwc(img)
                 images[self.rename_map[camera]] = img
                 image_mask[self.rename_map[camera]] = np.True_
             else:
@@ -236,9 +208,6 @@ class Go2ACOTInputs(transforms.DataTransformFn):
                     data[key][:, np.array(self.action_mask)[:data[key].shape[1]]] = 0
                 data[key] = transforms.pad_to_dim(data[key], self.action_dim)
                 inputs[key] = data[key]
-
-        if "task" in data: # training
-            data = self.random_inject_prompt(data)
 
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]

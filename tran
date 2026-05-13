@@ -1,0 +1,11 @@
+rsync -avh --progress -e "ssh -p 13117" \
+  /mnt/a/ljz/.tmp/agibot_r2a_lerobot/sorting_packages_part_1/ \
+  qid@172.188.75.122:/datadrive4/qid/agibot_challenge/data/Reasoning2Action-Sim/dataset_without_depth/sorting_packages_part_1/
+
+rsync -avh --progress -e "ssh -p 13117" \
+  /mnt/a/ljz/.tmp/agibot_r2a_lerobot/sorting_packages_part_2/ \
+  qid@172.188.75.122:/datadrive4/qid/agibot_challenge/data/Reasoning2Action-Sim/dataset_without_depth/sorting_packages_part_2/
+
+rsync -avh --progress -e "ssh -p 13117" \
+  /mnt/a/ljz/.tmp/agibot_r2a_lerobot/sorting_packages_part_3/ \
+  qid@172.188.75.122:/datadrive4/qid/agibot_challenge/data/Reasoning2Action-Sim/dataset_without_depth/sorting_packages_part_3/
