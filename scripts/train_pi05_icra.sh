@@ -34,6 +34,11 @@ SAVE_INTERVAL="${SAVE_INTERVAL:-2500}"
 FSDP_DEVICES="${FSDP_DEVICES:-1}"
 EMA_DECAY="${EMA_DECAY:-0.999}"
 WANDB_ENABLED="${WANDB_ENABLED:-false}"
+if [[ "${WANDB_ENABLED,,}" == "true" || "${WANDB_ENABLED,,}" == "1" || "${WANDB_ENABLED,,}" == "yes" || "${WANDB_ENABLED,,}" == "on" ]]; then
+  if [[ -n "${WANDB_API_KEY:-}" ]]; then
+    wandb login --relogin "${WANDB_API_KEY}"
+  fi
+fi
 
 cd "$(dirname "$0")/.."
 
