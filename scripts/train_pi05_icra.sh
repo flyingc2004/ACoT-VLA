@@ -16,6 +16,9 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/datadrive4/qid/cache}"
 export JAX_CACHE_DIR="${JAX_CACHE_DIR:-$XDG_CACHE_HOME/jax}"
 export XLA_AUTOTUNE_CACHE_DIR="${XLA_AUTOTUNE_CACHE_DIR:-$JAX_CACHE_DIR/xla_gpu_per_fusion_autotune_cache_dir}"
 mkdir -p "$TMPDIR" "$XDG_CACHE_HOME" "$JAX_CACHE_DIR" "$XLA_AUTOTUNE_CACHE_DIR"
+export WANDB_CONFIG_DIR="${WANDB_CONFIG_DIR:-/datadrive4/qid/wandb_config}"
+export WANDB_BASE_URL="${WANDB_BASE_URL:-https://api.wandb.ai}"
+mkdir -p "$WANDB_CONFIG_DIR"
 export FFMPEG_LIB_DIR="${FFMPEG_LIB_DIR:-/opt/miniconda/lib}"
 if [[ -d "${FFMPEG_LIB_DIR}" ]]; then
   export LD_LIBRARY_PATH="${FFMPEG_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
@@ -33,7 +36,9 @@ NUM_TRAIN_STEPS="${NUM_TRAIN_STEPS:-12500}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-2500}"
 FSDP_DEVICES="${FSDP_DEVICES:-1}"
 EMA_DECAY="${EMA_DECAY:-0.999}"
-WANDB_ENABLED="${WANDB_ENABLED:-false}"
+WANDB_ENABLED="${WANDB_ENABLED:-true}"
+RESUME="${RESUME:-false}"
+OVERWRITE="${OVERWRITE:-false}"
 if [[ "${WANDB_ENABLED,,}" == "true" || "${WANDB_ENABLED,,}" == "1" || "${WANDB_ENABLED,,}" == "yes" || "${WANDB_ENABLED,,}" == "on" ]]; then
   if [[ -n "${WANDB_API_KEY:-}" ]]; then
     wandb login --relogin "${WANDB_API_KEY}"
@@ -45,7 +50,6 @@ cd "$(dirname "$0")/.."
 train_args=(
   "${CONFIG_NAME}"
   --exp-name "${EXP_NAME}"
-  --overwrite
   --batch-size "${BATCH_SIZE}"
   --num-workers "${NUM_WORKERS}"
   --num-train-steps "${NUM_TRAIN_STEPS}"
@@ -53,6 +57,25 @@ train_args=(
   --fsdp-devices "${FSDP_DEVICES}"
   --ema-decay "${EMA_DECAY}"
 )
+
+overwrite_enabled=false
+resume_enabled=false
+case "${OVERWRITE,,}" in
+  true|1|yes|on) overwrite_enabled=true ;;
+esac
+case "${RESUME,,}" in
+  true|1|yes|on) resume_enabled=true ;;
+esac
+if $overwrite_enabled && $resume_enabled; then
+  echo "Cannot use --overwrite and --resume together." >&2
+  exit 1
+fi
+if $overwrite_enabled; then
+  train_args+=(--overwrite)
+fi
+if $resume_enabled; then
+  train_args+=(--resume)
+fi
 
 case "${WANDB_ENABLED,,}" in
   true|1|yes|on)

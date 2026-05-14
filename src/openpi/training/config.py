@@ -2054,6 +2054,7 @@ _CONFIGS = [
             pi05=True,
             action_dim=32,
             action_horizon=30,
+            max_token_len=240,
         ),
         data=LerobotPi05Go2DataConfig(
             default_prompt="This is the PI05 baseline config for sorting packages tasks.",
