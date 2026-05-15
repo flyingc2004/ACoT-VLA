@@ -1,6 +1,6 @@
 
 import torch
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+import lerobot.datasets.lerobot_dataset as lerobot_dataset
 
 
 RESET_KEYWORDS = ("reset", "return", "default")
