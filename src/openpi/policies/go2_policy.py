@@ -211,6 +211,8 @@ class Go2ACOTInputs(transforms.DataTransformFn):
 
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
+        
+        print(f"prompt: {inputs.get('prompt', None)}")
 
         return inputs
 

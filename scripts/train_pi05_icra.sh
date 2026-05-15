@@ -59,7 +59,7 @@ train_args=(
 )
 
 overwrite_enabled=false
-resume_enabled=false
+resume_enabled=true
 case "${OVERWRITE,,}" in
   true|1|yes|on) overwrite_enabled=true ;;
 esac

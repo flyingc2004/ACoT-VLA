@@ -2094,7 +2094,7 @@ _CONFIGS = [
             pi05=True,
             action_dim=32,
             action_horizon=30,
-        ).get_freeze_filter(freeze_vision=True, freeze_llm=True),
+        ).get_freeze_filter(freeze_vision=False, freeze_llm=True),
     ),
 
     # genie sim 3.0 baseline configs

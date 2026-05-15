@@ -165,6 +165,12 @@ class TransformedDataset(Dataset[T_co]):
                 length += len(item)
         return length
 
+    def __getattr__(self, name):
+        if name == "_dataset":
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '_dataset'")
+        dataset = object.__getattribute__(self, "_dataset")
+        return getattr(dataset, name)
+
 
 class TwoStageTransformedDataset(Dataset):
     """Applies separate stage-1 subtask and stage-2 action transform pipelines."""
