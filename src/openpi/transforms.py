@@ -438,7 +438,7 @@ class SegmentInstructionFromHighlevelInstruction(DataTransformFn):
         episode_index = int(data["episode_index"])
         # Keep an episode-level instruction view for downstream parsing (e.g., color extraction).
         instruction = _join_episode_instructions(self.instruction_segments, episode_index)
-        return {**data, "segment_instructions": instruction}
+        return {**data, "segment_instruction": instruction}
 
 @dataclasses.dataclass(frozen=True)
 class PadStatesAndActions(DataTransformFn):
