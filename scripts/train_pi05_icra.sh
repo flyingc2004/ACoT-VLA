@@ -62,4 +62,10 @@ case "${WANDB_ENABLED,,}" in
     ;;
 esac
 
-uv run python scripts/train.py "${train_args[@]}"
+VENV_PYTHON="${VENV_PYTHON:-$(pwd)/.venv/bin/python}"
+if [[ ! -x "${VENV_PYTHON}" ]]; then
+  echo "Virtual environment Python not found: ${VENV_PYTHON}" >&2
+  exit 1
+fi
+
+"${VENV_PYTHON}" scripts/train.py "${train_args[@]}"
