@@ -69,7 +69,7 @@ class AssetsConfig:
 @dataclasses.dataclass(frozen=True)
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
-    repo_id: str | None = None
+    repo_id: str | Sequence[str] | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -97,6 +97,9 @@ class DataConfig:
 
     prompt_from_hl_instruction: bool = False
 
+    # If true, will use the episode-level high-level instruction from LeRobot metadata as the prompt.
+    # This is useful for tasks whose task name is generic but whose episode instruction contains target details
+    # such as object color.
     dataloader_sampler: str | None = ''
 
     # Controls reset-like interval truncation in subtask sampler.
@@ -151,6 +154,17 @@ class ModelTransformFactory(GroupFactory):
                 )
             case _model.ModelType.ACOT_VLA_PI0:
                 assert isinstance(model_config, acot_vla.ACOTConfig)
+                high_level_inputs = []
+                if model_config.enable_subtask_generation:
+                    high_level_inputs = [
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizeHighLowPrompt(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                            use_state_input=model_config.subtask_use_state_input,
+                        ),
+                        _transforms.ACOTPadStatesAndActions(model_config.action_dim),
+                    ]
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
@@ -160,9 +174,21 @@ class ModelTransformFactory(GroupFactory):
                         ),
                         _transforms.ACOTPadStatesAndActions(model_config.action_dim),
                     ],
+                    high_level_inputs=high_level_inputs,
                 )
             case _model.ModelType.ACOT_VLA_PI05:
                 assert isinstance(model_config, acot_vla.ACOTConfig)
+                high_level_inputs = []
+                if model_config.enable_subtask_generation:
+                    high_level_inputs = [
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizeHighLowPrompt(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                            use_state_input=model_config.subtask_use_state_input,
+                        ),
+                        _transforms.ACOTPadStatesAndActions(model_config.action_dim),
+                    ]
                 return _transforms.Group(
                     inputs=[
                         _transforms.InjectDefaultPrompt(self.default_prompt),
@@ -173,6 +199,7 @@ class ModelTransformFactory(GroupFactory):
                         ),
                         _transforms.ACOTPadStatesAndActions(model_config.action_dim),
                     ],
+                    high_level_inputs=high_level_inputs,
                 )
             case _model.ModelType.PI0_FAST:
                 return _transforms.Group(
@@ -196,7 +223,7 @@ class ModelTransformFactory(GroupFactory):
 @dataclasses.dataclass(frozen=True)
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id.
-    repo_id: str = tyro.MISSING
+    repo_id: str | Sequence[str] = tyro.MISSING
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -667,6 +694,86 @@ class LerobotACOTGo2DataConfig(DataConfigFactory):
         )
         object.__setattr__(ret_config, 'joint_action_shifts', self.joint_action_shifts)
         return ret_config
+
+@dataclasses.dataclass(frozen=True)
+class LerobotPi05Go2DataConfig(DataConfigFactory):
+    """PI05 data config for the GenieSim Go2/ICRA challenge dataset.
+
+    This intentionally reuses the Go2 challenge input/output transforms but does
+    not create ACoT coarse actions. The resulting batch is the standard PI05
+    shape: (observation, actions).
+    """
+
+    prompt_from_hl_instruction: bool = False
+    extra_delta_transform: bool = True
+    default_prompt: str | None = None
+
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "images": {
+                            "top_head": "observation.images.top_head",
+                            "hand_left": "observation.images.hand_left",
+                            "hand_right": "observation.images.hand_right",
+                        },
+                        "state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                        "segment_instruction": "segment_instruction",
+                        "task": "task",
+                        "episode_index": "episode_index",
+                    }
+                )
+            ]
+        )
+    )
+
+    action_sequence_keys: Sequence[str] = ("action",)
+    state_mask: Sequence[int] = dataclasses.field(
+        default_factory=lambda: _transforms.make_bool_mask(-14, 2, 4, -1, 11)
+    )
+    action_mask: Sequence[int] = dataclasses.field(
+        default_factory=lambda: _transforms.make_bool_mask(-16, 4, -1, 11)
+    )
+    delta_action_mask: Sequence[int] = dataclasses.field(
+        default_factory=lambda: _transforms.make_bool_mask(14, -18)
+    )
+    prompt_map_inject_to_training: Dict[str, Sequence[str]] = dataclasses.field(
+        default_factory=lambda: {}
+    )
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[
+                go2_policy.Go2ACOTInputs(
+                    action_dim=model_config.action_dim,
+                    state_mask=self.state_mask,
+                    action_mask=self.action_mask,
+                    prompt_map_inject_to_training=self.prompt_map_inject_to_training,
+                    acot_action_generation=None,
+                )
+            ],
+            outputs=[go2_policy.Go2ACOTOutputs()],
+        )
+
+        if self.extra_delta_transform:
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(self.delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(self.delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotACOTLiberoDataConfig(DataConfigFactory):
@@ -1244,6 +1351,65 @@ class TrainConfig:
 
 
 # Use `get_config` if you need to get a config by name in your code.
+def _env_path(name: str, default: str) -> str:
+    return str(pathlib.Path(os.getenv(name, default)).expanduser())
+
+
+def _r2a_dataset_root() -> pathlib.Path:
+    return pathlib.Path(
+        os.getenv(
+            "R2A_DATASET_ROOT",
+            "./datasets/Reasoning2Action-Sim/dataset_without_depth",
+        )
+    ).expanduser()
+
+
+def _r2a_repo_ids(*names: str) -> list[str]:
+    root = _r2a_dataset_root()
+    return [str(root / name) for name in names]
+
+
+def _baseline_checkpoint_dir() -> pathlib.Path:
+    return pathlib.Path(os.getenv("ACOT_BASELINE_CHECKPOINT_DIR", "./checkpoints/baseline/30000")).expanduser()
+
+
+def _icra_prompt_map() -> dict[str, tuple[str, float]]:
+    return {
+        "Flip workpiece_icra_SIM": ("Pour the workpiece into the box", 1),
+        "Turn the doorknob": ("Turn the doorknob and push the door", 1),
+        "Pop the popcorn": ("Scoop the popcorn and pour it into the popcorn bucket", 1),
+        "Carry the pot": ("Grasp the two handles of the pot and place it on the stove", 1),
+        "Insert the building block socket_2_SIM": (
+            "Left arm pick up the yellow circular block from the table and place it into the round hole of the block box",
+            1,
+        ),
+        "Remove misplaced beverages from shelves": (
+            "Right arm picks up the incorrectly placed item from the shelf and place it into the shopping basket",
+            1,
+        ),
+        "Stock shelves\nStraighten objects\nIdentify ICRA (or Recognize ICRA, depending on context)\nAn object": (
+            "Right arm pick up the wei-chuan orange juice in the shopping basket and place it on the shelf, Then, right arm straighten the toppled wei-chuan grape juice",
+            1,
+        ),
+        "Stock shelves_Straighten_ICRA_An object": (
+            "Right arm pick up the wei-chuan orange juice in the shopping basket and place it on the shelf, Then, right arm straighten the toppled wei-chuan grape juice",
+            1,
+        ),
+        "Sort logistics parcels": (
+            "Grab the <color> package on the table, turn the waist right to face the barcode scanner, place the package on the scanning table with the barcode facing up. Then, grab the package, rotate the waist and place the package in the blue bin. Finally, return the waist back to face the initial table",
+            1,
+        ),
+        "Clear the desktop": (
+            "Pick up the pen on the left side and place it into the pen holder, "
+            "close the laptop, "
+            "pick up the tissue on the table and place it into the trash bin on the right size. "
+            "Then, pick up the mouse and place it on the right side of the laptop. "
+            "Finally, straighten the colored pencil box",
+            1,
+        ),
+    }
+
+
 _CONFIGS = [
     #
     # Inference Aloha configs.
@@ -1818,39 +1984,159 @@ _CONFIGS = [
         batch_size=128 if not os.getenv("DEBUG_MODE", default=False) == "true" else 16,
         freeze_filter=acot_vla.ACOTConfig().get_freeze_filter(freeze_vision = False, freeze_llm = True, freeze_dual_ae=[False, False]),
     ),
+    # GenieSim 3.0 PI05 baseline configs.
+    TrainConfig(
+        name="pi05_icra_simulation_challenge",
+        checkpoint_base_dir=_env_path("PI05_CHECKPOINT_BASE_DIR", "./checkpoints"),
+        model=pi0.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=30,
+        ),
+        data=LerobotPi05Go2DataConfig(
+            default_prompt="This is the icra simulation challenge PI05 baseline config. Please refer to the README for details.",
+            repo_id=_r2a_repo_ids(
+                "pour_workpiece",
+                "take_wrong_item_shelf",
+                "scoop_popcorn",
+                "scoop_popcorn_part_2",
+                "hold_pot",
+                "open_door",
+                "stock_and_straighten_shelf",
+                "stock_and_straighten_shelf_part_2",
+                "place_block_into_box",
+                "sorting_packages_part_1",
+                "sorting_packages_part_2",
+                "sorting_packages_part_3",
+                "clean_the_desktop_part_1",
+                "clean_the_desktop_part_2",
+                "clean_the_desktop_addition",
+            ),
+            assets=AssetsConfig(
+                assets_dir=os.getenv("BASELINE_NORM_ASSETS_DIR", str(_baseline_checkpoint_dir() / "assets")),
+                asset_id=".",
+            ),
+            prompt_map_inject_to_training=_icra_prompt_map(),
+            base_config=DataConfig(
+                dataloader_sampler="subtask",
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            os.getenv("PI05_BASE_PARAMS", "gs://openpi-assets-preview/checkpoints/pi05_may21_280k_v1/params")
+        ),
+        num_train_steps=50_000,
+        save_interval=10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
+        num_workers=32 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
+        batch_size=32 if not os.getenv("DEBUG_MODE", default=False) == "true" else 8,
+        freeze_filter=pi0.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=30,
+        ).get_freeze_filter(freeze_vision=True, freeze_llm=True),
+    ),
+    TrainConfig(
+        name="pi05_icra_sorting_packages",
+        checkpoint_base_dir=_env_path("PI05_CHECKPOINT_BASE_DIR", "./checkpoints"),
+        model=pi0.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=30,
+            max_token_len=240,
+        ),
+        data=LerobotPi05Go2DataConfig(
+            default_prompt="This is the PI05 baseline config for sorting packages tasks.",
+            repo_id=_r2a_repo_ids(
+                "sorting_packages_part_1",
+                "sorting_packages_part_2",
+                "sorting_packages_part_3",
+            ),
+            assets=AssetsConfig(
+                assets_dir=os.getenv("BASELINE_NORM_ASSETS_DIR", str(_baseline_checkpoint_dir() / "assets")),
+                asset_id=".",
+            ),
+            prompt_map_inject_to_training=_icra_prompt_map(),
+            base_config=DataConfig(
+                dataloader_sampler="subtask",
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            os.getenv("PI05_BASE_PARAMS", "gs://openpi-assets-preview/checkpoints/pi05_may21_280k_v1/params")
+        ),
+        num_train_steps=50_000,
+        save_interval=10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
+        num_workers=32 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
+        batch_size=32 if not os.getenv("DEBUG_MODE", default=False) == "true" else 8,
+        freeze_filter=pi0.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=30,
+        ).get_freeze_filter(freeze_vision=False, freeze_llm=True),
+    ),
+
     # genie sim 3.0 baseline configs
     TrainConfig(
         name="acot_icra_simulation_challenge_reasoning_to_action",
-        checkpoint_base_dir="/data/checkpoints",
+        checkpoint_base_dir=_env_path("ACOT_CHECKPOINT_BASE_DIR", "./checkpoints"),
         # For the ICRA sim challenge, we set both coarse and fine action horizons to 30 since the tasks are relatively long-horizon.
         # We also use both explicit and implicit action reasoners, and use the downsample-based implicit extractor.
         # You can modify these design choices based on the specific tasks and dataset. 
-        model=acot_vla.ACOTConfig(coarse_action_horizon=30, action_horizon=30, paligemma_variant="gemma_2b_lora", adopt_explicit_action_reasoner=True, adopt_implicit_action_reasoner=True, downsample_based_implicit_extractor=True),
+        model=acot_vla.ACOTConfig(
+            coarse_action_horizon=30,
+            action_horizon=30,
+            paligemma_variant="gemma_2b_lora",
+            adopt_explicit_action_reasoner=True,
+            adopt_implicit_action_reasoner=True,
+            downsample_based_implicit_extractor=True,
+            enable_subtask_generation=True,
+            subtask_temperature=0.0,
+            subtask_min_decoding_steps=2,
+            subtask_vocab_max_token=240_000,
+        ),
         data=LerobotACOTGo2DataConfig(
             default_prompt = "This is the icra simulation challenge baseline config. Please refer to the README for details.",
             # Fill in the 9 tasks for training. You can use all 9 tasks, or a subset of them based on your preference.
-            repo_id = [
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/pour_workpiece", # Pouring workpieces, single-arm task, uses right hand only
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/take_wrong_item_shelf", 
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/scoop_popcorn", 
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/scoop_popcorn_part_2", 
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/hold_pot",
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/open_door",
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/stock_and_straighten_shelf",
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/stock_and_straighten_shelf_part_2",
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/place_block_into_box",
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/sorting_packages_part_1",
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/sorting_packages_part_2",
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/sorting_packages_part_3",
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/clean_the_desktop_part_1",
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/clean_the_desktop_part_2",
-                "/data/Dataset/Reasoning2Action-Sim/dataset_without_depth/clean_the_desktop_addition"
-            ],
+            repo_id = _r2a_repo_ids(
+                "pour_workpiece", # Pouring workpieces, single-arm task, uses right hand only
+                "take_wrong_item_shelf",
+                "scoop_popcorn",
+                "scoop_popcorn_part_2",
+                "hold_pot",
+                "open_door",
+                "stock_and_straighten_shelf",
+                "stock_and_straighten_shelf_part_2",
+                "place_block_into_box",
+                "sorting_packages_part_1",
+                "sorting_packages_part_2",
+                "sorting_packages_part_3",
+                "clean_the_desktop_part_1",
+                "clean_the_desktop_part_2",
+                "clean_the_desktop_addition",
+            ),
             # Set the asset dir to specify normalization stats calculated from the dataset.
             # asset_id="." loads norm_stats.json from assets_dir itself (otherwise repo_id absolute paths
             # would ignore assets_dir; see DataConfigFactory._load_norm_stats).
             assets=AssetsConfig(
-                assets_dir="/data/checkpoints/baseline/30000/assets",
+                assets_dir=os.getenv("BASELINE_NORM_ASSETS_DIR", str(_baseline_checkpoint_dir() / "assets")),
                 asset_id=".",
             ),
             # this line defines a mapping from task name to (prompt, probability of replacement) for training. 
@@ -1936,7 +2222,7 @@ _CONFIGS = [
         optimizer = _optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay = 0.999,
         weight_loader = weight_loaders.ACOTCheckpointWeightLoader(
-            "/data/checkpoints/baseline/30000/params"
+            os.getenv("BASELINE_PARAMS", str(_baseline_checkpoint_dir() / "params"))
         ),
         num_train_steps = 50_000,
         save_interval = 10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
