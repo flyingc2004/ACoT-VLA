@@ -1,48 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source_root="${R2A_SOURCE_ROOT:-/home/qid/agibot/agibot_challenge/data/Reasoning2Action-Sim/dataset_without_depth}"
-target_root="${R2A_PREPARED_ROOT:-${R2A_DATASET_ROOT:-/home/qid/agibot/agibot_r2a_lerobot}}"
-
-if [[ ! -d "${source_root}" ]]; then
-  echo "Source dataset root does not exist: ${source_root}" >&2
-  exit 1
+export R2A_DATASET_ROOT="${R2A_DATASET_ROOT:-/home/qid/agibot/agibot_r2a_lerobot}"
+export BASELINE_NORM_ASSETS_DIR="${BASELINE_NORM_ASSETS_DIR:-/home/qid/agibot/checkpoint/pi05_icra_norm_assets}"
+export HF_HOME="${HF_HOME:-/home/qid/agibot/huggingface}"
+export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/home/qid/agibot/matplotlib}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/home/qid/agibot/uv_cache}"
+export FFMPEG_LIB_DIR="${FFMPEG_LIB_DIR:-/opt/miniconda/lib}"
+if [[ -d "${FFMPEG_LIB_DIR}" ]]; then
+  export LD_LIBRARY_PATH="${FFMPEG_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 fi
 
-mkdir -p "${target_root}"
+CONFIG_NAME="${CONFIG_NAME:-pi05_icra_simulation_challenge}"
+MAX_FRAMES="${MAX_FRAMES:-}"
 
-for source_dataset_dir in "${source_root}"/*; do
-  [[ -d "${source_dataset_dir}" ]] || continue
+cd "$(dirname "$0")/.."
 
-  task_name="$(basename "${source_dataset_dir}")"
-  target_dataset_dir="${target_root}/${task_name}"
-  mkdir -p "${target_dataset_dir}"
-
-  for part in meta data videos; do
-    source_dir="${source_dataset_dir}/${part}"
-    archive="${source_dataset_dir}/${part}.tar.gz.000"
-    output_dir="${target_dataset_dir}/${part}"
-
-    if [[ -d "${output_dir}" ]]; then
-      echo "[skip] ${output_dir}"
-      continue
-    fi
-
-    if [[ -d "${source_dir}" ]]; then
-      echo "[link] ${source_dir} -> ${output_dir}"
-      ln -s "${source_dir}" "${output_dir}"
-      continue
-    fi
-
-    if [[ ! -f "${archive}" ]]; then
-      echo "[missing] ${archive}"
-      continue
-    fi
-
-    echo "[extract] ${archive} -> ${target_dataset_dir}"
-    tar -xzf "${archive}" -C "${target_dataset_dir}"
-  done
-done
-
-echo "Prepared dataset root: ${target_root}"
-/home/qid/agibot/ACoT-VLA/examples
+if [[ -n "${MAX_FRAMES}" ]]; then
+  uv run python scripts/compute_norm_stats.py --config-name "${CONFIG_NAME}" --max-frames "${MAX_FRAMES}"
+else
+  uv run python scripts/compute_norm_stats.py --config-name "${CONFIG_NAME}"
+fi
