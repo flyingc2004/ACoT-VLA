@@ -16,9 +16,35 @@ CONFIG_NAME="${CONFIG_NAME:-pi05_icra_simulation_challenge}"
 MAX_FRAMES="${MAX_FRAMES:-}"
 
 cd "$(dirname "$0")/.."
+repo_root="$(pwd)"
 
-if [[ -n "${MAX_FRAMES}" ]]; then
-  uv run python scripts/compute_norm_stats.py --config-name "${CONFIG_NAME}" --max-frames "${MAX_FRAMES}"
-else
-  uv run python scripts/compute_norm_stats.py --config-name "${CONFIG_NAME}"
+if [[ -d "${repo_root}/lerobot/build/lib" ]]; then
+  export PYTHONPATH="${repo_root}/lerobot/build/lib:${PYTHONPATH:-}"
 fi
+
+if [[ -n "${VENV_PYTHON:-}" ]]; then
+  python_bin="${VENV_PYTHON}"
+elif [[ -n "${VIRTUAL_ENV:-}" || -n "${CONDA_PREFIX:-}" ]]; then
+  python_bin="$(command -v python)"
+elif [[ -x "${repo_root}/.venv/bin/python" ]]; then
+  python_bin="${repo_root}/.venv/bin/python"
+else
+  python_bin="$(command -v python)"
+fi
+
+compute_args=(scripts/compute_norm_stats.py --config-name "${CONFIG_NAME}")
+if [[ -n "${MAX_FRAMES}" ]]; then
+  compute_args+=(--max-frames "${MAX_FRAMES}")
+fi
+
+"${python_bin}" "${compute_args[@]}"
+
+generated_stats="${repo_root}/assets/${CONFIG_NAME}/norm_stats.json"
+if [[ ! -f "${generated_stats}" ]]; then
+  echo "Expected norm stats were not generated: ${generated_stats}" >&2
+  exit 1
+fi
+
+mkdir -p "${BASELINE_NORM_ASSETS_DIR}"
+install -m 0644 "${generated_stats}" "${BASELINE_NORM_ASSETS_DIR}/norm_stats.json"
+echo "Wrote norm stats to: ${BASELINE_NORM_ASSETS_DIR}/norm_stats.json"
