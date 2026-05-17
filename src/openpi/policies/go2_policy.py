@@ -236,7 +236,6 @@ class Go2ACOTInputs(transforms.DataTransformFn):
 
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
-
         return inputs
 
 

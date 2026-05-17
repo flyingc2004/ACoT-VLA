@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
-export PI05_BASE_PARAMS="${PI05_BASE_PARAMS:-/datadrive4/qid/checkpoint/pi05_base/params}"
-export R2A_DATASET_ROOT="${R2A_DATASET_ROOT:-/datadrive4/qid/agibot_r2a_lerobot}"
-export PI05_CHECKPOINT_BASE_DIR="${PI05_CHECKPOINT_BASE_DIR:-/datadrive4/qid/checkpoint}"
-export BASELINE_NORM_ASSETS_DIR="${BASELINE_NORM_ASSETS_DIR:-/datadrive4/qid/checkpoint/pi05_icra_norm_assets}"
+export PI05_BASE_PARAMS="${PI05_BASE_PARAMS:-/home/qid/agibot/checkpoint/pi05-base/params}"
+export R2A_DATASET_ROOT="${R2A_DATASET_ROOT:-/home/qid/agibot/agibot_r2a_lerobot}"
+export PI05_CHECKPOINT_BASE_DIR="${PI05_CHECKPOINT_BASE_DIR:-/home/qid/agibot/checkpoint}"
+export BASELINE_NORM_ASSETS_DIR="${BASELINE_NORM_ASSETS_DIR:-/home/qid/agibot/checkpoint/pi05_icra_norm_assets}"
 export HF_HOME="${HF_HOME:-/datadrive4/qid/huggingface}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/datadrive4/qid/matplotlib}"
-export UV_CACHE_DIR="${UV_CACHE_DIR:-/datadrive4/qid/uv_cache}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/home/qid/agibot/uv_cache}"
 export TMPDIR="${TMPDIR:-/datadrive4/qid/tmp}"
 export TEMP="${TEMP:-$TMPDIR}"
 export TMP="${TMP:-$TMPDIR}"
@@ -36,6 +36,7 @@ EMA_DECAY="${EMA_DECAY:-0.999}"
 WANDB_ENABLED="${WANDB_ENABLED:-true}"
 
 cd "$(dirname "$0")/.."
+export PYTHONPATH="/home/qid/agibot/ACoT-VLA/lerobot/build/lib:${PYTHONPATH:-}"
 
 train_args=(
   "${CONFIG_NAME}"

@@ -99,8 +99,9 @@ def main(config_name: str, max_frames: int | None = None):
             data_config, config.batch_size, config.model, max_frames
         )
 
-    keys = ["state", "actions", "coarse_actions"]
-    stats = {key: normalize.RunningStats() for key in keys}
+    candidate_keys = ["state", "actions", "coarse_actions"]
+    stats = {key: normalize.RunningStats() for key in candidate_keys}
+    active_keys = set()
 
     sample_ratio = 0.1
     max_batches = int(num_batches * sample_ratio)
@@ -117,16 +118,19 @@ def main(config_name: str, max_frames: int | None = None):
             print(f"\n[Warning] Skipped a bad batch due to error: {e}")
             continue
 
-        for key in keys:
+        for key in candidate_keys:
+            if key not in batch:
+                continue
             values = np.asarray(batch[key][0])
             stats[key].update(values.reshape(-1, values.shape[-1]))
+            active_keys.add(key)
 
         pbar.update(1)
         valid_batches += 1
 
     pbar.close()
 
-    norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
+    norm_stats = {key: stats[key].get_statistics() for key in active_keys}
 
     # output_path = "./"
     # print(f"Writing stats to: {output_path}")
