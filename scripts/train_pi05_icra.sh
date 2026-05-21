@@ -34,14 +34,48 @@ SAVE_INTERVAL="${SAVE_INTERVAL:-2500}"
 FSDP_DEVICES="${FSDP_DEVICES:-1}"
 EMA_DECAY="${EMA_DECAY:-0.999}"
 WANDB_ENABLED="${WANDB_ENABLED:-true}"
+RESUME="${RESUME:-false}"
+OVERWRITE="${OVERWRITE:-}"
 
 cd "$(dirname "$0")/.."
 export PYTHONPATH="/home/qid/agibot/ACoT-VLA/lerobot/build/lib:${PYTHONPATH:-}"
 
+parse_bool() {
+  local name="$1"
+  local value="${2,,}"
+  case "${value}" in
+    true|1|yes|on)
+      echo "true"
+      ;;
+    false|0|no|off)
+      echo "false"
+      ;;
+    *)
+      echo "Invalid ${name} value: ${2}. Expected true/false." >&2
+      exit 1
+      ;;
+  esac
+}
+
+resume_enabled="$(parse_bool RESUME "${RESUME}")"
+if [[ -z "${OVERWRITE}" ]]; then
+  if [[ "${resume_enabled}" == "true" ]]; then
+    overwrite_enabled="false"
+  else
+    overwrite_enabled="true"
+  fi
+else
+  overwrite_enabled="$(parse_bool OVERWRITE "${OVERWRITE}")"
+fi
+
+if [[ "${resume_enabled}" == "true" && "${overwrite_enabled}" == "true" ]]; then
+  echo "RESUME=true cannot be used with OVERWRITE=true." >&2
+  exit 1
+fi
+
 train_args=(
   "${CONFIG_NAME}"
   --exp-name "${EXP_NAME}"
-  --overwrite
   --batch-size "${BATCH_SIZE}"
   --num-workers "${NUM_WORKERS}"
   --num-train-steps "${NUM_TRAIN_STEPS}"
@@ -49,6 +83,12 @@ train_args=(
   --fsdp-devices "${FSDP_DEVICES}"
   --ema-decay "${EMA_DECAY}"
 )
+
+if [[ "${resume_enabled}" == "true" ]]; then
+  train_args+=(--resume)
+elif [[ "${overwrite_enabled}" == "true" ]]; then
+  train_args+=(--overwrite)
+fi
 
 case "${WANDB_ENABLED,,}" in
   true|1|yes|on)

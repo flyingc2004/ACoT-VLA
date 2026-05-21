@@ -728,7 +728,7 @@ class LerobotPi05Go2DataConfig(DataConfigFactory):
                     action_dim=model_config.action_dim,
                     state_mask=self.state_mask,
                     action_mask=self.action_mask,
-                    prompt_map_inject_to_training=self.prompt_map_inject_to_training,
+                    prompt_map_inject_to_training=None,
                     acot_action_generation=None,
                 )
             ],
@@ -1992,10 +1992,9 @@ _CONFIGS = [
                 assets_dir=os.getenv("BASELINE_NORM_ASSETS_DIR", str(_baseline_checkpoint_dir() / "assets")),
                 asset_id=".",
             ),
-            prompt_map_inject_to_training=_icra_prompt_map(),
             base_config=DataConfig(
                 dataloader_sampler="subtask",
-                prompt_from_task=True,
+                prompt_from_hl_instruction=True,
             ),
             extra_delta_transform=True,
         ),
@@ -2040,10 +2039,9 @@ _CONFIGS = [
                 assets_dir=os.getenv("BASELINE_NORM_ASSETS_DIR", str(_baseline_checkpoint_dir() / "assets")),
                 asset_id=".",
             ),
-            prompt_map_inject_to_training=_icra_prompt_map(),
             base_config=DataConfig(
                 dataloader_sampler="subtask",
-                prompt_from_task=True,
+                prompt_from_hl_instruction=True,
             ),
             extra_delta_transform=True,
         ),

@@ -422,7 +422,12 @@ class PromptFromHighlevelInstruction(DataTransformFn):
         instruction = _find_segment_instruction(self.instruction_segments, episode_index, frame_index)
         if instruction is None:
             raise ValueError(f"No segment found for episode {episode_index} and frame {frame_index}")
-        return {**data, "prompt": instruction}
+        return {
+            **data,
+            "prompt": instruction,
+            "subtask": instruction,
+            "segment_instruction": instruction,
+        }
 
 
 @dataclasses.dataclass(frozen=True)
