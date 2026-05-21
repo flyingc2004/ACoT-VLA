@@ -387,6 +387,7 @@ def create_torch_data_loader(
             dataset,
             data_config.dataloader_sampler,
             reset_truncation_mode=data_config.subtask_reset_truncation_mode,
+            keyword_multipliers=data_config.subtask_weight_multipliers,
         )
         shuffle = False
 

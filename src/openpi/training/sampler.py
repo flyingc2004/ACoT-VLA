@@ -9,6 +9,19 @@ RESET_TRUNCATE_THRESHOLD = 90
 RESET_TRUNCATE_TO = 45
 RESET_TRUNCATION_MODES = ("auto", "always", "never")
 
+
+def _instruction_weight(instruction: str, keyword_multipliers: dict[str, int] | None) -> int:
+    if not keyword_multipliers:
+        return 1
+
+    weight = 1
+    instruction = instruction.lower()
+    for keyword, multiplier in keyword_multipliers.items():
+        if keyword.lower() in instruction:
+            weight = max(weight, int(multiplier))
+    return max(1, weight)
+
+
 def get_base_dataset(ds):
     if hasattr(ds, "_dataset"):
         return get_base_dataset(ds._dataset)
@@ -29,7 +42,7 @@ def _iter_string_values(obj):
         for value in obj:
             yield from _iter_string_values(value)
 
-def sample_subtask(dataset):
+def sample_subtask(dataset, *, keyword_multipliers: dict[str, int] | None = None):
     valid_intervals = []
     base_ds = get_base_dataset(dataset)
     
@@ -64,6 +77,7 @@ def sample_subtask(dataset):
                 local_end = subtask["success_frame_index"] + local_episode_start
                 
                 instruction = subtask["instruction"].lower()
+                weight = _instruction_weight(instruction, keyword_multipliers)
                 if any(k in instruction for k in CONTINUOUS_KEYWORDS):
                     disable_reset_truncation = False
                 is_reset = any(k in instruction for k in RESET_KEYWORDS)
@@ -75,7 +89,7 @@ def sample_subtask(dataset):
                 global_start = local_start + current_global_offset
                 global_end = local_end + current_global_offset
                 
-                valid_intervals.append((global_start, global_end))
+                valid_intervals.append((global_start, global_end, weight))
         
         current_global_offset += len(sub_ds)
         total_episodes_processed += num_episodes
@@ -88,13 +102,21 @@ class FrameSampler(torch.utils.data.Sampler):
     """
     Custom sampler that only samples data indices falling within specified intervals
     """
-    def __init__(self, dataset, sampler_type, *, reset_truncation_mode="auto"):
+    def __init__(
+        self,
+        dataset,
+        sampler_type,
+        *,
+        reset_truncation_mode="auto",
+        keyword_multipliers: dict[str, int] | None = None,
+    ):
         if reset_truncation_mode not in RESET_TRUNCATION_MODES:
             raise ValueError(
                 f"Invalid reset truncation mode: {reset_truncation_mode}. "
                 f"Expected one of {RESET_TRUNCATION_MODES}."
             )
         self.reset_truncation_mode = reset_truncation_mode
+        self.keyword_multipliers = keyword_multipliers or {}
         valid_intervals = self.parse_dataset(dataset, sampler_type)
         self.sample_frames(valid_intervals, len(dataset))
 
@@ -104,7 +126,7 @@ class FrameSampler(torch.utils.data.Sampler):
             intervals: List of (start_index, end_index) tuples
         """
         if sampler_type == 'subtask':
-            return sample_subtask(dataset)
+            return sample_subtask(dataset, keyword_multipliers=self.keyword_multipliers)
         else:
             raise ValueError(f"Invalid sampler type: {sampler_type}")
 
@@ -119,23 +141,42 @@ class FrameSampler(torch.utils.data.Sampler):
         
         # Pre-compute all valid indices
         self.valid_indices = []
-        for start_idx, end_idx in intervals:
+        weighted_intervals = 0
+        for interval in intervals:
+            if len(interval) == 2:
+                start_idx, end_idx = interval
+                weight = 1
+            else:
+                start_idx, end_idx, weight = interval
+            weight = max(1, int(weight))
+            if weight > 1:
+                weighted_intervals += 1
             # Ensure indices are within dataset bounds
             start_idx = max(0, start_idx)
             end_idx = min(dataset_size - 1, end_idx)
             
             # Add all indices within the interval
-            self.valid_indices.extend(range(start_idx, end_idx + 1))
+            for _ in range(weight):
+                self.valid_indices.extend(range(start_idx, end_idx + 1))
         
-        # Remove duplicates and sort
-        self.valid_indices = sorted(list(set(self.valid_indices)))
-        print(f"Total {len(self.valid_indices)} valid indices,", 'original:', dataset_size)
+        if not weighted_intervals:
+            self.valid_indices = sorted(list(set(self.valid_indices)))
+        print(
+            f"Total {len(self.valid_indices)} valid indices,",
+            'original:',
+            dataset_size,
+            'weighted intervals:',
+            weighted_intervals,
+        )
 
         import random
         random.shuffle(self.valid_indices)
     
     def __iter__(self):
-        return iter(self.valid_indices)
+        import random
+        indices = list(self.valid_indices)
+        random.shuffle(indices)
+        return iter(indices)
     
     def __len__(self):
         return len(self.valid_indices)

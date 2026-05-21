@@ -107,6 +107,7 @@ class DataConfig:
     # - "always": always keep reset truncation enabled.
     # - "never": never truncate reset-like intervals.
     subtask_reset_truncation_mode: str = "auto"
+    subtask_weight_multipliers: dict[str, int] = dataclasses.field(default_factory=dict)
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -1968,6 +1969,13 @@ _CONFIGS = [
             pi05=True,
             action_dim=32,
             action_horizon=30,
+            image_augment_config=_model.ImageAugmentConfig(
+                brightness=0.20,
+                contrast=0.50,
+                saturation=0.20,
+                gamma_min=0.85,
+                gamma_max=1.25,
+            ),
         ),
         data=LerobotPi05Go2DataConfig(
             default_prompt="This is the icra simulation challenge PI05 baseline config. Please refer to the README for details.",
@@ -1995,6 +2003,7 @@ _CONFIGS = [
             base_config=DataConfig(
                 dataloader_sampler="subtask",
                 prompt_from_hl_instruction=True,
+                subtask_weight_multipliers={"yellow": 3, "white": 3},
             ),
             extra_delta_transform=True,
         ),
@@ -2027,6 +2036,13 @@ _CONFIGS = [
             action_dim=32,
             action_horizon=30,
             max_token_len=240,
+            image_augment_config=_model.ImageAugmentConfig(
+                brightness=0.2,
+                contrast=0.65,
+                saturation=0.20,
+                gamma_min=0.85,
+                gamma_max=1.25,
+            ),
         ),
         data=LerobotPi05Go2DataConfig(
             default_prompt="This is the PI05 baseline config for sorting packages tasks.",
@@ -2042,6 +2058,7 @@ _CONFIGS = [
             base_config=DataConfig(
                 dataloader_sampler="subtask",
                 prompt_from_hl_instruction=True,
+                subtask_weight_multipliers={"yellow": 3, "white": 3},
             ),
             extra_delta_transform=True,
         ),

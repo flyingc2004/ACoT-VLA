@@ -59,6 +59,17 @@ IMAGE_KEYS = (
 IMAGE_RESOLUTION = (224, 224)
 
 
+@dataclasses.dataclass(frozen=True)
+class ImageAugmentConfig:
+    crop_scale: float = 0.95
+    rotate_degrees: float = 5.0
+    brightness: float = 0.3
+    contrast: float = 0.4
+    saturation: float = 0.5
+    gamma_min: float = 1.0
+    gamma_max: float = 1.0
+
+
 # Data format
 #
 # Data transforms produce the model input as a nested dictionary which is later converted
@@ -158,6 +169,7 @@ def preprocess_observation(
     train: bool = False,
     image_keys: Sequence[str] = IMAGE_KEYS,
     image_resolution: tuple[int, int] = IMAGE_RESOLUTION,
+    image_augment_config: ImageAugmentConfig | None = None,
 ) -> Observation:
     """Preprocess the observations by performing image augmentations (if train=True), resizing (if necessary), and
     filling in a default image mask (if necessary).
@@ -176,22 +188,44 @@ def preprocess_observation(
             image = image_tools.resize_with_pad(image, *image_resolution)
 
         if train:
+            if rng is None:
+                raise ValueError("preprocess_observation requires an rng when train=True")
+
+            augment = image_augment_config or ImageAugmentConfig()
             # Convert from [-1, 1] to [0, 1] for augmax.
             image = image / 2.0 + 0.5
 
             transforms = []
-            if "wrist" not in key:
+            if "wrist" not in key and augment.crop_scale < 1.0:
                 height, width = image.shape[1:3]
                 transforms += [
-                    augmax.RandomCrop(int(width * 0.95), int(height * 0.95)),
+                    augmax.RandomCrop(int(width * augment.crop_scale), int(height * augment.crop_scale)),
                     augmax.Resize(width, height),
-                    augmax.Rotate((-5, 5)),
                 ]
-            transforms += [
-                augmax.ColorJitter(brightness=0.3, contrast=0.4, saturation=0.5),
-            ]
-            sub_rngs = jax.random.split(rng, image.shape[0])
-            image = jax.vmap(augmax.Chain(*transforms))(sub_rngs, image)
+            if "wrist" not in key and augment.rotate_degrees > 0:
+                transforms.append(augmax.Rotate((-augment.rotate_degrees, augment.rotate_degrees)))
+            if augment.brightness > 0 or augment.contrast > 0 or augment.saturation > 0:
+                transforms.append(
+                    augmax.ColorJitter(
+                        brightness=augment.brightness,
+                        contrast=augment.contrast,
+                        saturation=augment.saturation,
+                    )
+                )
+            if transforms:
+                rng, transform_rng = jax.random.split(rng)
+                sub_rngs = jax.random.split(transform_rng, image.shape[0])
+                image = jax.vmap(augmax.Chain(*transforms))(sub_rngs, image)
+
+            if augment.gamma_min != 1.0 or augment.gamma_max != 1.0:
+                rng, gamma_rng = jax.random.split(rng)
+                gamma = jax.random.uniform(
+                    gamma_rng,
+                    (image.shape[0], 1, 1, 1),
+                    minval=augment.gamma_min,
+                    maxval=augment.gamma_max,
+                )
+                image = jnp.power(jnp.clip(image, 0.0, 1.0), gamma)
 
             # Back to [-1, 1].
             image = image * 2.0 - 1.0
