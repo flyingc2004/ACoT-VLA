@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 import logging
+import os
 import pathlib
 import time
 from typing import Any, TypeAlias
@@ -16,6 +17,7 @@ from typing_extensions import override
 from openpi import transforms as _transforms
 from openpi.models import model as _model
 from openpi.policies.sorting_phase_state_machine import SortingContinuousPromptController
+from openpi.policies.sorting_segment_prompt_controller import SortingSegmentPromptController
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 from PIL import Image
@@ -40,9 +42,21 @@ class Policy(BasePolicy):
         self._rng = rng or jax.random.key(0)
         self._sample_kwargs = sample_kwargs or {}
         self._metadata = metadata or {}
-        self._sorting_prompt_controller: SortingContinuousPromptController | None = None
+        self._sorting_prompt_controller: Any | None = None
+        sorting_prompt_mode = os.getenv("SORTING_PROMPT_CONTROLLER", "phase").strip().lower()
         try:
-            self._sorting_prompt_controller = SortingContinuousPromptController.from_env()
+            if sorting_prompt_mode in ("", "phase", "old"):
+                self._sorting_prompt_controller = SortingContinuousPromptController.from_env()
+            elif sorting_prompt_mode == "segment":
+                self._sorting_prompt_controller = SortingSegmentPromptController.from_env()
+            elif sorting_prompt_mode == "off":
+                self._sorting_prompt_controller = None
+            else:
+                logging.warning(
+                    "Unknown SORTING_PROMPT_CONTROLLER=%r. Expected phase, segment, or off. "
+                    "Automatic sorting prompt switching is disabled.",
+                    sorting_prompt_mode,
+                )
         except Exception:  # pylint: disable=broad-exception-caught
             logging.warning("Failed to initialize sorting prompt controller:\n%s", traceback.format_exc())
 
@@ -52,20 +66,20 @@ class Policy(BasePolicy):
         inputs = jax.tree.map(lambda x: x, obs)
         logging.info("Task name: %s", inputs.get("task_name", ""))
 
-        # For sorting continuous tasks, update prompt by two-state machine:
-        # state0 --(task_terminal)--> state1 --(already_reset)--> state0 and switch to next color.
+        # Sorting prompt controller is feature-gated by SORTING_PROMPT_CONTROLLER.
+        # phase keeps the old coarse controller; segment uses segment-specific prompts.
         if self._sorting_prompt_controller is not None:
-            updated_prompt, phase_pred = self._sorting_prompt_controller.step(inputs)
-            if phase_pred is not None:
+            updated_prompt, prompt_pred = self._sorting_prompt_controller.step(inputs)
+            if prompt_pred is not None:
                 logging.info(
-                    "Sorting phase prediction: label=%s conf=%.4f",
-                    phase_pred.label,
-                    phase_pred.confidence,
+                    "Sorting prompt prediction: label=%s conf=%.4f",
+                    prompt_pred.label,
+                    prompt_pred.confidence,
                 )
             if updated_prompt is not None:
                 print(f"updated prompt: {updated_prompt}")
                 inputs["prompt"] = updated_prompt
-                logging.info("Updated sorting continuous prompt to: %s", updated_prompt)
+                logging.info("Updated sorting prompt to: %s", updated_prompt)
 
         # There are other tasks that requires prompt mapping, we need to add them here
 

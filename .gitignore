@@ -172,3 +172,5 @@ logs/
 *exps*
 .vscode/
 *.png
+*.jpg
+/outputs/
