@@ -1,0 +1,54 @@
+{
+  "labels": [
+    "grab_table",
+    "turn_to_scanner",
+    "place_on_scanning_table",
+    "grab_from_scanning_table",
+    "rotate_to_bin",
+    "place_in_blue_bin",
+    "return_initial"
+  ],
+  "stage_prompts": {
+    "grab_table": "Grab the package on the table with right arm <color>.",
+    "turn_to_scanner": "Turn the waist right to face the barcode scanner.",
+    "place_on_scanning_table": "Place the package on the scanning table with the barcode facing up.",
+    "grab_from_scanning_table": "The right arm grabs the package.",
+    "rotate_to_bin": "Rotate the waist with the right arm.",
+    "place_in_blue_bin": "Place the package in the blue bin.",
+    "return_initial": "Both arms coordinate and the waist returns to the initial posture."
+  },
+  "camera_key": "observation.images.top_head",
+  "frame_stride": 10,
+  "max_frames_per_segment": 40,
+  "val_ratio": 0.1,
+  "trim_ratio": 0.05,
+  "place_scan_window": [
+    0.3,
+    0.85
+  ],
+  "grab_scan_window": [
+    0.25,
+    0.75
+  ],
+  "counts": {
+    "train": {
+      "grab_table": 10610,
+      "turn_to_scanner": 5662,
+      "place_on_scanning_table": 5699,
+      "grab_from_scanning_table": 5349,
+      "rotate_to_bin": 2573,
+      "place_in_blue_bin": 3648,
+      "return_initial": 3657
+    },
+    "val": {
+      "grab_table": 973,
+      "turn_to_scanner": 548,
+      "place_on_scanning_table": 559,
+      "grab_from_scanning_table": 513,
+      "rotate_to_bin": 259,
+      "place_in_blue_bin": 324,
+      "return_initial": 350
+    }
+  },
+  "unknown_instructions": {}
+}

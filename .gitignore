@@ -173,4 +173,3 @@ logs/
 .vscode/
 *.png
 *.jpg
-/outputs/
